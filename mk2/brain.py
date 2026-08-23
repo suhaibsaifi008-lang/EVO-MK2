@@ -30,18 +30,36 @@ def _fast_path(text: str) -> str | None:
 
 
 def sanitize_final(text: str) -> str:
+    """NEVER leak internal protocol into the conversation."""
     out = (text or "").strip()
+
+    # Remove any TOOL RESULT markers
     out = re.sub(r"^\s*TOOL RESULT.*$", "", out, flags=re.MULTILINE)
-    m = re.search(r"\{.*\"say\".*\}", out, re.DOTALL)
-    if m:
+
+    # Remove any JSON objects that look like tool calls or say-wrappers
+    json_blocks = re.findall(r"\{[^{}]*\}", out)
+    for jb in json_blocks:
+        parsed = None
         try:
-            inner = json_loads(m.group(0)).get("say")
-            if inner:
-                out = str(inner).strip()
+            parsed = json.loads(jb)
         except Exception:
             pass
-    return re.sub(r"\n{3,}", "\n\n", out)[:2000]
+        if isinstance(parsed, dict) and ("tool" in parsed or "say" in parsed or "action" in parsed):
+            replacement = str(parsed.get("say", "")).strip()
+            out = out.replace(jb, replacement)
+        elif isinstance(parsed, dict) and "name" in parsed and "args" in parsed:
+            # vault_read / vault_search style tool echoes
+            out = out.replace(jb, "")
 
+    # Remove any remaining bare JSON that looks like a tool invocation
+    out = re.sub(
+        r'\{\s*"(?:name|tool)"\s*:.*?\}',
+        "", out, flags=re.DOTALL
+    )
+
+    # Clean up whitespace
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out.strip()[:2000]
 
 def json_loads(s: str):
     import json

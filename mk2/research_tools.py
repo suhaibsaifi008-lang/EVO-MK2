@@ -100,7 +100,7 @@ def deep_research(topic: str) -> dict:
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
     refs = "\n".join(f"[{i+1}] {s['url']}" for i, s in enumerate(sources))
     doc = (f"# Research: {topic}\n\n"
-           f"*{stamp} · {len(sources)} sources*" if has_sources else f"*{stamp} · AI knowledge*"
+           f"*{stamp} &middot; {len(sources)} sources*" if has_sources else f"*{stamp} &middot; AI knowledge*"
            f"{report}\n\n## Sources\n{refs}\n")
 
     from .vault import write_note

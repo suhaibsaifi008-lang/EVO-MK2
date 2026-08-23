@@ -1,3 +1,4 @@
+import time
 """M2 tools registration: files, docs, vision, time/reminders, calendar."""
 from .tools import tool  # noqa: F401
 from .fs_tools import fs_read, fs_search, fs_write  # noqa: F401

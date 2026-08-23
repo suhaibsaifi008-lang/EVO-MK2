@@ -106,6 +106,13 @@ def _single(t: str) -> str | None:
     m = re.fullmatch(r"(?:deep )?research(?: about)? (.+)", t)
     if m:
         topic = m.group(1).strip()
+        # Strip trailing instructions the user appended
+        topic = re.sub(
+            r"\s*(?:and |then )?(?:give me|show me|tell me|write)\s+(?:a |an |the )?"
+            r"?(brief|summary|report|overview).*$",
+            "", topic, flags=re.IGNORECASE
+        ).strip()
+        topic = re.sub(r"\s+", " ", topic)
         if topic:
 
             def _bg(topic=topic):

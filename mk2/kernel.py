@@ -74,6 +74,21 @@ def main(voice: bool = True) -> None:
 
     _supervise("reminders", _reminder_tick)
 
+    from .awareness import run_checks as _run_awareness
+
+    async def _awareness_loop() -> None:
+        while True:
+            try:
+                alerts = _run_awareness(bus.publish)
+                for alert in alerts:
+                    bus.publish("notify.out", {"kind": "watcher", "text": alert})
+            except Exception:
+                pass
+            await asyncio.sleep(120)
+
+    if os.environ.get("EVO_AWARENESS", "1") == "1":
+        _supervise("awareness", _awareness_loop)
+
     import os
 
     if voice and os.environ.get("EVO_WAKE", "0") == "1":
