@@ -46,9 +46,18 @@ def _hard_bounded(fn, seconds: float):
 
 
 def _providers() -> list[dict]:
-    """Ordered chain. Gemini (free tier, fast) leads when a key exists;
-    OpenAI-compatible (FreeLLMAPI etc.) next; Ollama = offline fallback."""
+    """Ordered chain. FreeLLMAPI (user's primary) first; Gemini second;
+    Ollama = offline fallback last."""
     provs = []
+    if settings.openai_key:
+        is_ollama = (settings.ollama_base
+                     and settings.openai_base.rstrip("/") == settings.ollama_base.rstrip("/"))
+        if not is_ollama:
+            provs.append({
+                "name": "freellmapi", "kind": "openai",
+                "base": settings.openai_base, "key": settings.openai_key,
+                "default_model": settings.openai_model, "timeout_bias": 0,
+            })
     if settings.gemini_key:
         provs.append({
             "name": "gemini", "kind": "gemini", "base": "",
@@ -56,16 +65,6 @@ def _providers() -> list[dict]:
             "default_model": settings.gemini_text_model,
             "timeout_bias": 0,
         })
-    if settings.openai_key:
-        # Skip duplicate: an openai-compatible endpoint pointing at the same
-        # ollama base is just ollama with extra steps.
-        if not (settings.ollama_base
-                and settings.openai_base.rstrip("/") == settings.ollama_base.rstrip("/")):
-            provs.append({
-                "name": "openai-compatible", "kind": "openai",
-                "base": settings.openai_base, "key": settings.openai_key,
-                "default_model": settings.openai_model, "timeout_bias": 0,
-            })
     if settings.ollama_base:
         provs.append({
             "name": "ollama", "kind": "openai", "base": settings.ollama_base,

@@ -1,4 +1,5 @@
-﻿"""Web fetch/search helpers (stdlib only)."""
+from . import tool
+
 import html as htmllib
 import re
 import urllib.parse
@@ -23,6 +24,21 @@ def ddg_results(query: str, max_results: int = 5) -> list[dict]:
             continue
         title = re.sub(r"(?s)<[^>]+>", "", htmllib.unescape(m.group(2))).strip()
         if len(title) >= 4:
+            out.append({"title": title[:120], "url": url})
+        if len(out) >= max_results:
+            break
+    if not out:
+        return _bing_results(query, max_results)
+    return out
+
+
+def _bing_results(query: str, max_results: int = 5) -> list[dict]:
+    raw = _get("https://www.bing.com/search?q=" + urllib.parse.quote_plus(query), timeout=10)
+    out = []
+    for m in re.finditer(r'(?is)<li class="b_algo".*?<h2><a href="(https?://[^"]+)"[^>]*>(.*?)</a></h2>', raw):
+        url = m.group(1)
+        title = re.sub(r"(?s)<[^>]+>", "", htmllib.unescape(m.group(2))).strip()
+        if len(title) >= 4 and "bing.com" not in url:
             out.append({"title": title[:120], "url": url})
         if len(out) >= max_results:
             break

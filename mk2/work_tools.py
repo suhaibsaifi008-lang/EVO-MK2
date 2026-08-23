@@ -77,9 +77,25 @@ def screen_read(question: str = "Describe what is on the screen.") -> dict:
     from .llm import LLMUnavailable, chat_vision
 
     png = _capture_png()
+    # Compress: resize to max 1280px wide and re-encode as JPEG for speed
     try:
-        answer = chat_vision(question.strip()[:300] or "Describe the screen.",
-                             png.read_bytes(), timeout=40)
+        from io import BytesIO
+        from PIL import Image
+
+        img = Image.open(png)
+        if img.width > 1280:
+            ratio = 1280 / img.width
+            img = img.resize((1280, int(img.height * ratio)))
+        buf = BytesIO()
+        img.convert("RGB").save(buf, format="JPEG", quality=70)
+        img_bytes = buf.getvalue()
+    except Exception:
+        img_bytes = png.read_bytes()
+
+    try:
+        answer = chat_vision(
+            question.strip()[:300] or "Describe the screen.",
+            img_bytes, timeout=30)
     except LLMUnavailable as exc:
         return {"ok": False,
                 "speech": ("I captured the screen but my vision model is "
