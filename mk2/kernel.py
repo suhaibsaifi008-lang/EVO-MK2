@@ -1,0 +1,77 @@
+﻿"""Kernel: owns the loop, supervises subsystems, restarts on death."""
+import asyncio
+import logging
+
+from . import db, tools
+from .bus import bus
+
+log = logging.getLogger("mk2.kernel")
+
+_tasks: dict[str, asyncio.Task] = {}
+_restarts: dict[str, int] = {}
+_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _supervise(name: str, factory) -> asyncio.Task:
+    async def runner() -> None:
+        while True:
+            try:
+                await factory()
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:  # noqa: BLE001
+                _restarts[name] = _restarts.get(name, 0) + 1
+                log.warning("subsystem %s died (%s) - restart #%d",
+                            name, exc, _restarts[name])
+                await asyncio.sleep(min(2 * max(1, _restarts[name]), 10))
+
+    task = _loop.create_task(runner(), name=name)
+    _tasks[name] = task
+    return task
+
+
+async def _server_subsystem() -> None:
+    import uvicorn
+
+    from .config import settings
+    from .server import app
+
+    ucfg = uvicorn.Config(app, host=settings.host, port=settings.port,
+                          log_level="warning", lifespan="off")
+    server = uvicorn.Server(ucfg)
+    await server.serve()
+
+
+async def _voice_subsystem() -> None:
+    from .voice.gateway import gateway
+
+    gateway.start()
+    while True:
+        await asyncio.sleep(5)
+
+
+def main(voice: bool = True) -> None:
+    global _loop
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    db.migrate()
+    tools.load_builtin_tools()
+    _loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(_loop)
+    bus.attach_loop(_loop)
+
+    _supervise("server", _server_subsystem)
+    if voice:
+        _supervise("voice", _voice_subsystem)
+
+    from .config import settings
+
+    log.info("EVO MK2 kernel online: http://%s:%d", settings.host, settings.port)
+    try:
+        _loop.run_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        for t in _tasks.values():
+            t.cancel()
+        _loop.close()
