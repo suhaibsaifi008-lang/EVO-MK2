@@ -105,7 +105,7 @@ document.addEventListener("keydown", (e) => {
 async function boot() {
   try {
     const h = await (await fetch("/api/health")).json();
-    $("engineTag").textContent = `${h.voice} · ${h.llm_online ? "LLM online" : "LLM offline"}`;
+    $("engineTag").textContent = `${h.voice} · ${h.llm_online === true ? "LLM online" : h.llm_online === false ? "LLM offline" : "LLM checking"}`;
     $("conn").className = "dot online";
     const hr = new Date().getHours();
     const part = hr < 12 ? "morning" : hr < 18 ? "afternoon" : "evening";
@@ -113,3 +113,4 @@ async function boot() {
   } catch { $("conn").className = "dot offline"; }
 }
 setInterval(boot, 30000); boot();
+

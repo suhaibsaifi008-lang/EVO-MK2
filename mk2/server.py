@@ -16,21 +16,38 @@ from . import brain, config, db, llm, tools
 app = FastAPI(title="EVO MK2")
 UI = Path(config.UI_DIR)
 
-_llm_probe = {"ts": 0.0, "ok": False}
+_llm_probe = {"ts": 0.0, "ok": False, "probing": False}
 
 
-def _llm_online_cached() -> bool:
-    if time.time() - _llm_probe["ts"] < 30:
-        return bool(_llm_probe["ok"])
-    ok = False
-    try:
-        llm.chat([{"role": "user", "content": "ping"}], temperature=0,
-                 timeout=4, bias=False, max_providers=1)
-        ok = True
-    except Exception:
-        ok = False
-    _llm_probe.update(ts=time.time(), ok=ok)
-    return ok
+_probe_lock = threading.Lock()
+
+
+def _llm_online_cached():
+    """Non-blocking tri-state: True / False / None(=checking).
+
+    A slow provider must NEVER stall health - the probe runs in a daemon
+    thread and its result is picked up by a later call."""
+    now = time.time()
+    if now - _llm_probe["ts"] < 30 or _llm_probe["probing"]:
+        return None if _llm_probe["probing"] else bool(_llm_probe["ok"])
+    with _probe_lock:
+        if _llm_probe["probing"]:
+            return None
+        _llm_probe["probing"] = True
+
+        def probe() -> None:
+            ok = False
+            try:
+                llm.chat([{"role": "user", "content": "ping"}],
+                         temperature=0, timeout=8, bias=False, max_providers=1)
+                ok = True
+            except Exception:
+                ok = False
+            finally:
+                _llm_probe.update(ts=time.time(), ok=ok, probing=False)
+
+        threading.Thread(target=probe, daemon=True, name="mk2-llm-probe").start()
+    return None
 
 
 class ChatIn(BaseModel):
@@ -128,3 +145,4 @@ def audit_view():
 def clear_chat():
     db.clear_messages()
     return {"ok": True}
+

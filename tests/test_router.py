@@ -10,18 +10,23 @@ def temp_db(tmp_path, monkeypatch):
 
 
 def test_provider_failover_primary_to_ollama(monkeypatch):
-    monkeypatch.setattr(llm.settings, "openai_key", "k")
-    monkeypatch.setattr(llm.settings, "ollama_base", "http://x/v1")
-    monkeypatch.setattr(llm.settings, "ollama_model", "qwen3:4b")
+    provs = [
+        {"name": "primary", "base": "https://primary.test/v1", "key": "k",
+         "default_model": "gpt-x", "timeout_bias": 0},
+        {"name": "ollama", "base": "http://ollama.test/v1", "key": "",
+         "default_model": "qwen3:4b", "timeout_bias": 0},
+    ]
+    monkeypatch.setattr(llm, "_providers", lambda: provs)
     calls = []
     def fake(base, key, payload, timeout=60):
-        calls.append(payload["model"])
-        if base.endswith("api.openai.com/v1"):
+        calls.append((base, payload["model"]))
+        if base.startswith("https://primary"):
             raise ConnectionError("down")
         return {"choices": [{"message": {"content": "OLLAMA"}}]}
     monkeypatch.setattr(llm, "_completion", fake)
     out = llm.chat([{"role": "user", "content": "hi"}])
-    assert out == "OLLAMA" and len(calls) >= 2
+    assert out == "OLLAMA"
+    assert len(calls) >= 2 and calls[0][0].startswith("https://primary")
 
 
 def test_all_down_raises():
