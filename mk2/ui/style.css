@@ -41,3 +41,9 @@ body{font-family:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;font-s
 /* PTT */
 .btn.ptt { width:auto; padding:0 14px; font-size:12px; letter-spacing:1px; color:var(--t2); }
 .btn.ptt.on { color:#fff; background:linear-gradient(135deg,#e05656,#b33); border-color:transparent; animation:pulse 1.4s infinite; }
+
+/* orb canvas lives BEHIND everything */
+#faceCanvas { position: fixed; inset: 0; z-index: 0; opacity: .55; pointer-events: none; }
+.app, #toasts { position: relative; z-index: 1; }
+.side, .top { background: rgba(14,16,20,.72); backdrop-filter: blur(8px); }
+.composer .pillbar { background: rgba(22,26,34,.82); }

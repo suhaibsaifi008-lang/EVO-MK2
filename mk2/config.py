@@ -1,4 +1,4 @@
-"""EVO MK2 configuration: env-first, typed, zero magic.
+﻿"""EVO MK2 configuration: env-first, typed, zero magic.
 
 Secrets live in .env (git-ignored) or the system credential store later.
 Everything else is env-overridable with sane defaults.
@@ -53,6 +53,8 @@ class Settings:
             "gemini-2.5-flash-native-audio-latest,gemini-3.1-flash-live-preview",
         ).split(",") if m.strip()
     ])
+    gemini_text_model: str = field(default_factory=lambda: _s(
+        "JARVIS_GEMINI_TEXT_MODEL", "gemini-3.5-flash-lite"))
     voice_engine: str = field(default_factory=lambda: _s("EVO_VOICE_ENGINE", "auto"))  # auto|live|local
 
     host: str = field(default_factory=lambda: _s("EVO_HOST", "127.0.0.1"))
@@ -66,3 +68,4 @@ def refresh() -> None:
     """Re-read env into settings (used after tests mutate environ)."""
     global settings
     settings = Settings()
+

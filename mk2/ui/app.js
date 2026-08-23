@@ -79,6 +79,7 @@ async function sendStreaming(text) {
         if (ev.type === "thinking" && !acc) body.innerHTML = '<span class="typing"><i></i><i></i><i></i></span>';
         else if (ev.type === "delta") { acc += ev.text; setBody(body, acc, "evo"); log.scrollTop = log.scrollHeight; }
         else if (ev.type === "done") { done = true; acc = ev.text || acc; setBody(body, acc, "evo"); }
+          if (!$('voiceOut')?.checked) setTimeout(() => faceState("idle"), 1200);
         else if (ev.type === "error" && ev.text && ev.text !== "cancelled") toast(ev.text);
       }
     }
@@ -162,6 +163,7 @@ async function pttStart() {
   sourceNode.connect(processor);
   processor.connect(audioCtx.destination);
   $("pttBtn").classList.add("on");
+  faceState("listening");
   $("sttPreview").textContent = "Listening... speak now";
 }
 
@@ -183,6 +185,7 @@ async function pttFinish() {
     $("sttPreview").textContent = ""; toast("Didnt hear anything."); return;
   }
   $("sttPreview").textContent = "Transcribing...";
+    faceState("thinking");
   try {
     const wav = encodeWav(samples, rate);
     const res = await fetch("/api/transcribe", { method: "POST", body: wav });
@@ -210,10 +213,93 @@ sendStreaming = async function (text) {
         .then((r) => { if (r.ok) return r.blob(); throw new Error("no"); })
         .then((b) => {
           if (currentAudio) currentAudio.pause();
+          faceState("speaking");
           currentAudio = new Audio(URL.createObjectURL(b));
           currentAudio.play().catch(() => {});
+          currentAudio.onended = () => faceState("idle");
+          currentAudio.onpause = () => faceState("idle");
         })
         .catch(() => {});
     }
   }
 };
+
+/* ================= FACE ENGINE (living orb behind the console) ================= */
+const faceCv = document.getElementById("faceCanvas");
+if (faceCv) {
+  const fx = faceCv.getContext("2d");
+  let FW, FH, ft = 0;
+  let faceStateVal = "idle";
+  window.faceState = function (s) {
+    faceStateVal = s;
+    const el = document.getElementById("stateTag");
+    if (el) el.textContent = s;
+  };
+  function fResize() { FW = faceCv.width = innerWidth; FH = faceCv.height = innerHeight; }
+  addEventListener("resize", fResize); fResize();
+
+  const parts = [];
+  for (let i = 0; i < 90; i++) parts.push({ a: Math.random()*6.283, r: .55+Math.random()*.45, sp: .0015+Math.random()*.004, s: 1+Math.random()*2.2 });
+  const traces = [];
+  for (let i = 0; i < 24; i++) traces.push({ x: Math.random(), y: Math.random(), len: .06+Math.random()*.22, sp: .002+Math.random()*.01, dir: Math.random()<.5?-1:1, v: Math.random() });
+
+  let speakLevel = 0, idleT = 0;
+  setInterval(() => {
+    if (faceStateVal === "idle" && Date.now() - (window.__lastFaceActivity||0) > 20000) {
+      idleT += .016; // gentle breathing phase offset
+    }
+  }, 500);
+
+  function loopFace() {
+    ft += 1/60;
+    fx.clearRect(0, 0, FW, FH);
+    const cxp = FW/2, cyp = FH*0.34;
+    const baseR = Math.min(FW,FH)*0.13;
+
+    let R = baseR, glow = .35, speed = .7;
+    if (faceStateVal === "listening") { R = baseR*(1.03+.05*Math.sin(ft*3)); glow=.6; speed=1.2; }
+    else if (faceStateVal === "thinking") { R = baseR*(1+.04*Math.sin(ft*9)); glow=.5; speed=2.2; }
+    else if (faceStateVal === "speaking") {
+      speakLevel += ((.5+.5*Math.sin(ft*11))*(.35+.65*Math.random()) - speakLevel)*.35;
+      R = baseR*(1+speakLevel*.22); glow=.75+.25*speakLevel; speed=2.4;
+    } else { R = baseR*(1+.02*Math.sin((ft+idleT)*1.2)); glow=.32+.08*Math.sin(ft*.8); }
+
+    const g = fx.createRadialGradient(cxp,cyp,R*.1,cxp,cyp,R*1.15);
+    g.addColorStop(0,`rgba(170,215,255,${.85*glow+.12})`);
+    g.addColorStop(.55,`rgba(110,168,254,${.5*glow})`);
+    g.addColorStop(1,"rgba(10,20,40,0)");
+    fx.beginPath(); fx.arc(cxp,cyp,R*1.15,0,7); fx.fillStyle=g; fx.fill();
+
+    for (const [rr,lw,a] of [[1.0,2,.9],[1.18,1.2,.5],[1.42,1,.28]]) {
+      fx.beginPath(); fx.arc(cxp,cyp,R*rr,ft*speed,ft*speed+Math.PI*1.6);
+      fx.strokeStyle=`rgba(140,190,255,${a})`; fx.lineWidth=lw; fx.stroke();
+    }
+
+    for (const p of parts) {
+      p.a += p.sp*speed;
+      const rr = R*p.r*1.5;
+      fx.beginPath();
+      fx.arc(cxp+Math.cos(p.a)*rr, cyp+Math.sin(p.a)*rr*.92, p.s*(faceStateVal==="speaking"?1.5:1), 0, 7);
+      fx.fillStyle=`rgba(150,200,255,${.22+.42*Math.abs(Math.sin(p.a*3))}`+")";
+      fx.fill();
+    }
+
+    for (const tr of traces) {
+      tr.v += tr.sp*(faceStateVal==="speaking"?3:speed);
+      if (tr.v>1) tr.v=0;
+      const x0=tr.x*FW, y0=tr.y*FH, x1=x0+tr.len*FW*tr.dir;
+      fx.strokeStyle=`rgba(90,140,220,${.08+.22*tr.v})`; fx.lineWidth=tr.w;
+      fx.strokeRect(Math.min(x0,x1),y0-1,Math.abs(x1-x0),2);
+      fx.beginPath(); fx.arc(x0,y0,2.2,0,7);
+      fx.fillStyle=`rgba(140,190,255,${.12+.45*tr.v})`; fx.fill();
+    }
+
+    requestAnimationFrame(loopFace);
+  }
+  window.faceState("idle");
+  loopFace();
+
+  /* keep orb alive on any user activity */
+  ["pointerdown","keydown","input"].forEach(evtName =>
+    addEventListener(evtName, () => { window.__lastFaceActivity = Date.now(); }));
+}

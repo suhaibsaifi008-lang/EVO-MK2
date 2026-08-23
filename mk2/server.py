@@ -65,7 +65,10 @@ def index():
 
 @app.get("/face")
 def face():
-    return FileResponse(UI / "face.html")
+    """MK2 v0.2: the face lives INSIDE the console now."""
+    from fastapi.responses import RedirectResponse
+
+    return RedirectResponse(url="/")
 
 
 @app.get("/ui/{name}")
