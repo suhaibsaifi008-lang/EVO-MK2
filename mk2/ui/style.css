@@ -69,3 +69,16 @@ body{font-family:"Segoe UI Variable Text","Segoe UI",-apple-system,sans-serif;fo
 @keyframes pop{from{transform:translateY(-6px);opacity:0}}
 
 @media(max-width:600px){.msg.user{max-width:92%}.msg.evo{padding-left:0}.msg.evo::before{display:none}}
+
+
+.msg.highlight {
+  border-left: 3px solid var(--acc);
+  padding-left: 14px !important;
+  background: rgba(110,168,254,.06);
+  border-radius: 0 12px 12px 0;
+}
+.new-chat-btn {
+  background: var(--panel); border: 1px solid var(--ls); color: var(--txt);
+  border-radius: 8px; padding: 5px 12px; font-size: 12px; cursor: pointer;
+}
+.new-chat-btn:hover { background: var(--panel2); }

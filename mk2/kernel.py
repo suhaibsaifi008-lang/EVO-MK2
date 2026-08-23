@@ -2,7 +2,7 @@
 import asyncio
 import logging
 
-from . import db, tools
+from . import db, llm, tools
 from .bus import bus
 
 log = logging.getLogger("mk2.kernel")

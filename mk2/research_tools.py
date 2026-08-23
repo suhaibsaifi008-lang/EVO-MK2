@@ -93,7 +93,7 @@ def deep_research(topic: str) -> dict:
     return {"ok": True,
             "speech": f"Research complete on {topic} using {len(sources)} sources — saved to the vault.",
             "data": {"path": str(path), "sources": [s["url"] for s in sources],
-                     "report": doc[:1500]}}
+                     "report": doc[:4000]}}
 
 
 @tool("web_fetch", "Fetch a webpage and return its readable text.",

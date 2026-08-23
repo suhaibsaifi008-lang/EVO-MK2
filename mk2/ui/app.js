@@ -57,10 +57,11 @@ if (faceCv) {
 }
 
 /* messages */
-function addMsg(text, who) {
+function addMsg(text, who, opts) {
+  opts = opts || {};
   $("hero").style.display = "none";
   const div = document.createElement("div");
-  div.className = `msg ${who}`;
+  div.className = `msg ${who}${opts.highlight ? " highlight" : ""}`;
   const body = document.createElement("div");
   body.className = "msg-body"; body.dataset.raw = text || "";
   setBody(body, text, who);
@@ -207,3 +208,44 @@ boot(); setInterval(boot, 30000);
 
 // auto-grow textarea
 $("chatInput").addEventListener("input", function () { this.style.height = "auto"; this.style.height = Math.min(this.scrollHeight, 180) + "px"; });
+
+
+/* ================= EVENT BUS LISTENER =================
+   Receives proactive events from the server: reminders firing,
+   research completing, watcher alerts, etc. Without this, all
+   those things happen server-side and are INVISIBLE to you. */
+const es = new EventSource("/api/events");
+es.onmessage = (m) => {
+  try {
+    const ev = JSON.parse(m.data);
+    if (ev.type === "notify.out") {
+      const kind = ev.payload?.kind || "info";
+      const text = ev.payload?.text || "";
+      // Show as a prominent chat message so it can't be missed
+      addMsg(text, "evo", { highlight: true });
+      toast(text);
+      // Speak it aloud too
+      fetch(`/api/tts?text=${encodeURIComponent(text.slice(0, 300))}`)
+        .then(r => r.ok ? r.blob() : null)
+        .then(b => { if (b) new Audio(URL.createObjectURL(b)).play().catch(() => {}); })
+        .catch(() => {});
+    }
+    if (ev.type === "system.voice") {
+      faceState(ev.payload?.state === "session" ? "listening" : "idle");
+    }
+  } catch {}
+};
+es.onerror = () => { /* auto-reconnects */ };
+
+/* New Chat button */
+const ncBtn = document.createElement("button");
+ncBtn.className = "new-chat-btn";
+ncBtn.textContent = "+ New chat";
+ncBtn.onclick = () => {
+  log.innerHTML = "";
+  const h = document.getElementById("hero");
+  if (h) h.style.display = "";
+  faceState("idle");
+  toast("New conversation started.");
+};
+document.querySelector(".topbar").appendChild(ncBtn);
