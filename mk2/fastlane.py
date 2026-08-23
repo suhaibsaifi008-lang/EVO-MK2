@@ -44,6 +44,23 @@ def fast_command(text: str) -> str | None:
             r = tools.call("open_app", {"target": target})
             return r["speech"]
 
+    # reminders
+    if t.startswith(("remind me", "reminder", "set a reminder")) or " remind me to " in t:
+        from .timeparse import parse_when, strip_when
+        from . import db
+        due = parse_when(t)
+        body = strip_when(t)
+        if due:
+            rid = db.reminder_add(body[:300], due.timestamp())
+            hm = due.strftime('%H:%M')
+            return f"Reminder set for {hm} ({body[:60]})."
+        return None
+
+    # screenshot
+    if re.fullmatch(r"(take a |capture a )?screenshot", t):
+        r = tools.call("screenshot")
+        return r["speech"] if r["ok"] else "Screenshot failed."
+
     # search X  → run real web search, speak top titles instantly
     m = re.fullmatch(r"(?:search(?: for)?|google|look up) (.+)", t)
     if m:

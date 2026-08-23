@@ -61,6 +61,16 @@ def main(voice: bool = True) -> None:
     bus.attach_loop(_loop)
 
     _supervise("server", _server_subsystem)
+
+    async def _reminder_tick() -> None:
+        from . import reminders
+
+        while True:
+            reminders.tick(bus.publish)
+            await asyncio.sleep(2)
+
+    _supervise("reminders", _reminder_tick)
+
     import os
 
     if voice and os.environ.get("EVO_WAKE", "0") == "1":

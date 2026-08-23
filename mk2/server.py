@@ -183,6 +183,13 @@ def memory_view():
     return {"facts": db.all_facts(), "episodes": db.recall_episodes("", 0) or []}
 
 
+@app.get("/api/diag")
+def diag():
+    from . import diag as diag_mod
+
+    return diag_mod.run_checks(include_network=False)
+
+
 @app.get("/api/audit")
 def audit_view():
     return db.recent_audit(20)

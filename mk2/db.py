@@ -60,6 +60,13 @@ CREATE TABLE IF NOT EXISTS jobs (
     created REAL,
     updated REAL
 );
+CREATE TABLE IF NOT EXISTS reminders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    text TEXT NOT NULL,
+    due_at REAL NOT NULL,
+    fired INTEGER DEFAULT 0,
+    created REAL
+);
 CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_traces_turn ON traces(turn_id);
 """
@@ -194,3 +201,43 @@ def trace(turn_id: str, stage: str, ms: float, detail: str = "") -> None:
             "INSERT INTO traces(turn_id,stage,ms,detail,ts) VALUES(?,?,?,?,?)",
             (turn_id[:40], stage[:40], round(ms, 1), detail[:300], time.time()),
         )
+
+
+# ---------------- reminders ----------------
+
+def reminder_add(text: str, due_at: float) -> int:
+    with _lock, connect() as c:
+        cur = c.execute(
+            "INSERT INTO reminders(text,due_at,fired,created) VALUES(?,?,0,?)",
+            (text[:400], due_at, time.time()),
+        )
+        return int(cur.lastrowid or 0)
+
+
+def reminders_due(now: float | None = None) -> list[dict]:
+    now = now if now is not None else time.time()
+    with _lock, connect() as c:
+        rows = c.execute(
+            "SELECT id,text,due_at FROM reminders WHERE fired=0 AND due_at<=? ORDER BY due_at",
+            (now,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def reminder_mark_fired(rid: int) -> None:
+    with _lock, connect() as c:
+        c.execute("UPDATE reminders SET fired=1 WHERE id=?", (rid,))
+
+
+def reminders_pending() -> list[dict]:
+    with _lock, connect() as c:
+        rows = c.execute(
+            "SELECT id,text,due_at FROM reminders WHERE fired=0 ORDER BY due_at LIMIT 20"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def reminder_cancel(rid: int) -> bool:
+    with _lock, connect() as c:
+        cur = c.execute("DELETE FROM reminders WHERE id=? AND fired=0", (int(rid),))
+        return cur.rowcount > 0
