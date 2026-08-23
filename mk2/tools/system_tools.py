@@ -1,6 +1,7 @@
 ﻿"""System tools: apps, shell (permissioned), volume, screenshot, screen read."""
 import os
 import shutil
+from pathlib import Path
 
 from . import tool
 import subprocess
@@ -32,37 +33,144 @@ SITES = {
     "github": "https://github.com", "reddit": "https://www.reddit.com",
     "wikipedia": "https://en.wikipedia.org", "chatgpt": "https://chatgpt.com",
     "gemini": "https://gemini.google.com", "netflix": "https://www.netflix.com",
+    "amazon": "https://www.amazon.in", "flipkart": "https://www.flipkart.com",
+    "linkedin": "https://www.linkedin.com", "twitch": "https://www.twitch.tv",
+    "stack overflow": "https://stackoverflow.com",
 }
 
+_apps_cache = {"items": None, "ts": 0.0}
 
-@tool("open_app", "Open an app, known site, or URL by name.",
+
+def _installed_apps() -> list[str]:
+    """All Start-Menu app names (user+system), cached 10 min. General by
+    design: anything the user installs becomes openable automatically."""
+    import time as _t
+    from pathlib import Path
+
+    if _apps_cache["items"] and _t.time() - _apps_cache["ts"] < 600:
+        return _apps_cache["items"]
+    names = set()
+    bases = []
+    for env in ("APPDATA", "PROGRAMDATA"):
+        b = os.environ.get(env)
+        if b:
+            bases.append(Path(b) / r"Microsoft\Windows\Start Menu\Programs")
+    for base in bases:
+        if base.exists():
+            for p in base.rglob("*.lnk"):
+                stem = p.stem.strip()
+                if 2 <= len(stem) <= 40 and not stem.startswith("{"):
+                    names.add(stem)
+    _apps_cache["items"] = sorted(names)
+    _apps_cache["ts"] = _t.time()
+    return _apps_cache["items"]
+
+
+def _find_lnk(name: str) -> str | None:
+    low = name.lower()
+    for env in ("APPDATA", "PROGRAMDATA"):
+        b = os.environ.get(env)
+        if not b:
+            continue
+        base = Path(b) / r"Microsoft\Windows\Start Menu\Programs"
+        if not base.exists():
+            continue
+        for p in base.rglob("*.lnk"):
+            if p.stem.lower() == low or p.stem.lower().startswith(low):
+                return str(p)
+    return None
+
+
+def _fuzzy(target: str, choices: list[str], cutoff: float = 0.72):
+    from difflib import get_close_matches
+
+    hits = get_close_matches(target.lower(), [c.lower() for c in choices], n=1, cutoff=cutoff)
+    if hits:
+        for c in choices:
+            if c.lower() == hits[0]:
+                return c
+    return None
+
+
+@tool("open_app", "Open ANY app, site, or URL by name. Handles typos; unknown names fall back to a web search.",
       {"target": {"type": "string"}}, permission="execute")
 def open_app(target: str) -> dict:
+    import difflib
     import webbrowser
 
-    t = target.strip().lower()
+    raw = target.strip()
+    t = raw.lower()
+
+    # 1) URL-ish → straight to browser
+    url = raw if raw.startswith(("http://", "https://")) else None
+    if url is None and "." in t and " " not in t and len(t.rsplit(".", 1)[-1]) <= 4:
+        url = f"https://{raw}"
+    if url:
+        webbrowser.open(url)
+        return {"ok": True, "speech": f"Opening {url}.", "data": {"url": url}}
+
+    # 2) exact alias / site / installed-app name
     alias = APP_ALIASES.get(t)
     if alias:
+        if alias.endswith(":"):
+            os.startfile(alias)  # noqa: S606
+            return {"ok": True, "speech": f"Opening {t}.", "data": {}}
         resolved = shutil.which(alias) or shutil.which(f"{alias}.exe")
-        if t.endswith(":"):
-            os.startfile(t)  # noqa: S606
-            return {"ok": True, "speech": f"Opening {t.rstrip(':')}.", "data": {}}
-        if not resolved:
-            raise FileNotFoundError(f"{alias} not on PATH")
-        os.startfile(resolved)  # noqa: S606
-        return {"ok": True, "speech": f"Opening {t}.", "data": {}}
+        if resolved:
+            os.startfile(resolved)  # noqa: S606
+            return {"ok": True, "speech": f"Opening {t}.", "data": {}}
     if t in SITES:
         webbrowser.open(SITES[t])
         return {"ok": True, "speech": f"Opening {t} in your browser.", "data": {}}
-    url = target if target.startswith(("http://", "https://")) else None
-    if url is None and "." in t and " " not in t and len(t.split(".")[-1]) <= 4:
-        url = f"https://{target}"
-    if url:
-        webbrowser.open(url)
-        return {"ok": True, "speech": "Opening that site.", "data": {"url": url}}
-    # last resort: let Windows resolve the name (Start Menu / Store)
-    os.startfile(target)  # noqa: S606
-    return {"ok": True, "speech": f"Opening {target}.", "data": {}}
+
+    # 3) fuzzy match across aliases + sites + every installed Start-Menu app
+    candidates = list(APP_ALIASES.keys()) + list(SITES.keys()) + _installed_apps()
+    lower_to_orig = {}
+    for c in candidates:
+        lower_to_orig.setdefault(c.lower(), c)
+    match = None
+    try:
+        close = difflib.get_close_matches(t.lower(), list(lower_to_orig), n=1, cutoff=0.72)
+        if close:
+            match = lower_to_orig[close[0]]
+    except Exception:
+        match = None
+
+    if match:
+        alias = APP_ALIASES.get(match)
+        if alias:
+            resolved = shutil.which(alias) or shutil.which(f"{alias}.exe")
+            if resolved:
+                os.startfile(resolved)  # noqa: S606
+                return {"ok": True, "speech": f"Opening {match}.", "data": {"matched": t}}
+        if match in SITES:
+            webbrowser.open(SITES[match])
+            return {"ok": True, "speech": f"Opening {match} in your browser.", "data": {"matched": t}}
+        lnk = _find_lnk(match)
+        if lnk:
+            os.startfile(lnk)  # noqa: S606
+            return {"ok": True, "speech": f"Opening {match}.", "data": {}}
+        exe = shutil.which(match) or shutil.which(f"{match}.exe")
+        if exe:
+            os.startfile(exe)  # noqa: S606
+            return {"ok": True, "speech": f"Opening {match}.", "data": {}}
+
+    # 4) Start-Menu direct hit (exact or prefix)
+    lnk = _find_lnk(raw)
+    if lnk:
+        os.startfile(lnk)  # noqa: S606
+        display = Path(lnk).stem
+        return {"ok": True, "speech": f"Opening {display}.", "data": {}}
+
+    # 5) Unknown → search the web instead of failing. Never crash.
+    from urllib.parse import quote_plus
+
+    search_url = f"https://duckduckgo.com/?q={quote_plus(raw)}"
+    webbrowser.open(search_url)
+    note = f" (matched '{match}')" if match else ""
+    return {"ok": True,
+            "speech": f"I couldn't find an app called '{raw}'{note}, so I searched the web instead.",
+            "data": {"searched": True, "url": search_url}}
 
 
 @tool("close_app", "Close app windows whose title contains the target.",

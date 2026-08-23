@@ -110,6 +110,7 @@ def handle_turn(
     manifest_text = "\n".join(
         f"- {t['name']}: {t['description']} args={t['args']}" for t in manifest
     )
+
     system_extra = (
         f"\nTOOLS (exact names only):\n{manifest_text}\n"
         'To act, reply ONLY {"tool":"name","args":{...}}. After tool results settle, '
@@ -119,6 +120,10 @@ def handle_turn(
     messages[0]["content"] += system_extra
 
     answer = ""
+    fail_streak = 0
+    last_fail_tool = None
+    last_fail_speech = ""
+    last_fail_tool = None
     for step in range(MAX_STEPS):
         if check_cancel():
             raise TurnCancelled()
@@ -149,10 +154,52 @@ def handle_turn(
             args = call.get("args") if isinstance(call.get("args"), dict) else {}
             emit({"type": "tool", "name": name,
                   "brief": ", ".join(f"{k}={str(v)[:36]}" for k, v in list(args.items())[:2])})
+            # Long-running tools become background jobs: reply instantly,
+            # stream progress, announce the result when done.
+            manifest_by_name = {t["name"]: t for t in manifest}
+            if manifest_by_name.get(name, {}).get("long_running"):
+                tools.set_emitter(emit)
+
+                def _bg_run(args=args):
+                    result_bg = tools.call(name, args)
+                    tools.set_emitter(None)
+                    speech_bg = str(result_bg.get("speech", ""))[:300]
+                    bus.publish("notify.out", {"kind": name,
+                                               "text": f"{name} finished: {speech_bg}"})
+
+                threading.Thread(target=_bg_run, daemon=True,
+                                 name=f"mk2-bg-{name}").start()
+                ack = (f"Started {name.replace('_', ' ')} on '{args.get('topic', args.get('goal', ''))[:60]}'. "
+                       "I'll report back here when it's done.")
+                emit({"type": "done", "text": ack})
+                memory.record_turn(text, ack, surface)
+                bus.publish("convo.turn", {"id": turn_id, "text": text, "reply": ack})
+                return ack
+
+            tools.set_emitter(emit)
             result = tools.call(name, args)
+            tools.set_emitter(None)
             messages.append({"role": "assistant", "content": raw})
+            if result.get("ok") is False:
+                fail_streak += 1
+                fail_speech = str(result.get("speech", ""))[:150]
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"TOOL RESULT ({name}): FAILED - {fail_speech}\n"
+                        f"This failed {fail_streak}x. Do NOT retry the same call. Use a "
+                        "different tool or different arguments, or finish honestly with "
+                        '{"say": "..."} explaining what you could not do.'
+                    ),
+                })
+                if fail_streak >= 3:
+                    answer = (f"I couldn't complete that - {name} kept failing "
+                              f"({fail_speech}).")
+                    break
+                continue
+            fail_streak = 0
             messages.append({"role": "user",
-                             "content": f"TOOL RESULT ({name}): {str(result)[:1800]}"})
+                             "content": f"TOOL RESULT ({name}):\n{str(result)[:1800]}"})
             continue
         # final answer
         if "say" in (call or {}):

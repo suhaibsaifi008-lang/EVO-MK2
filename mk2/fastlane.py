@@ -3,6 +3,9 @@
 Anything matched here never reaches an LLM — this is the latency fix.
 """
 import re
+import threading as _th_mod
+
+from .bus import bus
 
 from . import tools
 from .tools.system_tools import APP_ALIASES, SITES
@@ -29,20 +32,46 @@ def fast_command(text: str) -> str | None:
     if re.fullmatch(r"(mute|unmute)( the( sound| volume))?", t):
         r = tools.call("volume", {"action": "mute"}); return r["speech"]
 
-    # open X   (app alias, known site, or URL-ish)
+    # open X — fully general: delegates to open_app which handles apps,
+    # sites, URLs, typos (fuzzy), Start-Menu discovery and web-search
+    # fallback. Always instant.
     m = re.fullmatch(r"open(?: up)? (?:the |my )?(.+?)(?: app| website| site)?", t)
     if m:
-        target = m.group(1).strip()
-        key = target.replace(" browser", "").strip()
-        if key in APP_ALIASES or target in APP_ALIASES or key.endswith(":"):
-            r = tools.call("open_app", {"target": key if key in APP_ALIASES else target})
-            return r["speech"]
-        if target in SITES or key in SITES:
-            r = tools.call("open_app", {"target": target})
-            return r["speech"]
-        if "." in target and " " not in target and len(target.split(".")[-1]) <= 4:
-            r = tools.call("open_app", {"target": target})
-            return r["speech"]
+        r = tools.call("open_app", {"target": m.group(1).strip()})
+        return r["speech"]
+
+    # close X
+    m = re.fullmatch(r"close (?:the |my )?(.+)", t)
+    if m:
+        r = tools.call("close_app", {"target": m.group(1).strip()})
+        return r["speech"]
+
+    # screen awareness -> vision tool directly (no text-model detour)
+    if re.search(r"(what.s on my screen|on my screen right now|read my screen|see my screen)", t):
+        r = tools.call("screen_read")
+        return r["speech"] if r["ok"] else None
+
+    # deep research -> instant background job (no LLM decision needed)
+    m = re.fullmatch(r"(?:deep )?research (.+)", t)
+    if m:
+        import threading as _th
+
+        from .bus import bus
+
+        topic = m.group(1).strip().rstrip(".")
+        if not topic:
+            return None
+
+        def _bg():
+            res = tools.call("deep_research", {"topic": topic})
+            bus.publish("notify.out", {
+                "kind": "research",
+                "text": f"Research finished: {res.get('speech', '')[:200]}",
+            })
+
+        _th_mod.Thread(target=_bg, daemon=True, name="mk2-research").start()
+        return (f"Starting deep research on '{topic}'. I'll save a cited report "
+                "to your vault and tell you when it's done.")
 
     # reminders
     if t.startswith(("remind me", "reminder", "set a reminder")) or " remind me to " in t:

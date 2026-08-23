@@ -13,6 +13,21 @@ from .. import db
 
 _lock = threading.Lock()
 _REGISTRY: dict[str, "Tool"] = {}
+_emitter = {"fn": None}
+
+
+def set_emitter(fn) -> None:
+    """Brain attaches its event emitter so long tools can stream progress."""
+    _emitter["fn"] = fn
+
+
+def emit_progress(text: str) -> None:
+    fn = _emitter.get("fn")
+    if fn:
+        try:
+            fn({"type": "progress", "text": str(text)[:160]})
+        except Exception:
+            pass
 
 
 class PermissionDenied(RuntimeError):
@@ -44,7 +59,8 @@ def tool(name: str, description: str, args: dict | None = None,
 def manifest() -> list[dict]:
     with _lock:
         return [
-            {"name": t.name, "description": t.description, "args": t.args_schema}
+            {"name": t.name, "description": t.description, "args": t.args_schema,
+             "long_running": t.long_running}
             for t in _REGISTRY.values()
         ]
 
@@ -80,7 +96,7 @@ def ensure_loaded() -> int:
     if _loaded:
         return len(manifest())
     from . import system_tools, web_tools  # noqa: F401  (register side effects)
-    from .. import calendar_tools, vault, work_tools  # noqa: F401  (work tools + vault)
+    from .. import calendar_tools, research_tools, vault, work_tools  # noqa: F401  (work tools + vault)
 
     _loaded = True
     return len(manifest())

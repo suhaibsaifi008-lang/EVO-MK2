@@ -4,6 +4,34 @@ from .fs_tools import fs_read, fs_search, fs_write  # noqa: F401
 from . import fs_tools as _fs  # noqa: F401
 
 
+import subprocess
+import time as t
+
+from pathlib import Path
+
+from .config import DATA
+
+
+def _capture_png() -> Path:
+    """Capture the whole screen to a PNG; returns the path."""
+    shots = DATA / "screenshots"
+    shots.mkdir(parents=True, exist_ok=True)
+    stamp = t.strftime("%Y%m%d_%H%M%S") + "_" + str(t.time_ns() % 1000)
+    out = shots / f"cap_{stamp}.png"
+    ps = (
+        "Add-Type -AssemblyName System.Windows.Forms,System.Drawing;"
+        "$b=[System.Windows.Forms.SystemInformation]::VirtualScreen;"
+        "$bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height;"
+        "$g=[System.Drawing.Graphics]::FromImage($bmp);"
+        "$g.CopyFromScreen($b.Left,$b.Top,0,0,$bmp.Size);"
+        f"$bmp.Save('{out}');$g.Dispose();$bmp.Dispose()"
+    )
+    subprocess.run(["powershell", "-NoProfile", "-Command", ps], check=True,
+                   capture_output=True,
+                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=25)
+    return out
+
+
 @tool("docs_read", "Read text from TXT/MD/CSV/JSON/PDF/DOCX files.",
       {"path": {"type": "string"}, "max_chars": {"type": "integer"}}, permission="read")
 def docs_read(path: str, max_chars: int = 4000) -> dict:
@@ -38,57 +66,25 @@ def docs_read(path: str, max_chars: int = 4000) -> dict:
 
 @tool("screenshot", "Capture the screen to a PNG.", {}, permission="read")
 def screenshot() -> dict:
-    import subprocess
-    import time as t
-    from .config import DATA
-
-    shots = DATA / "screenshots"
-    shots.mkdir(parents=True, exist_ok=True)
-    out = shots / f"shot_{t.strftime('%Y%m%d_%H%M%S')}.png"
-    ps = (
-        "Add-Type -AssemblyName System.Windows.Forms,System.Drawing;"
-        "$b=[System.Windows.Forms.SystemInformation]::VirtualScreen;"
-        "$bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height;"
-        "$g=[System.Drawing.Graphics]::FromImage($bmp);"
-        f"$g.CopyFromScreen($b.Left,$b.Top,0,0,$bmp.Size);"
-        f"$bmp.Save('{out}');$g.Dispose();$bmp.Dispose()"
-    )
-    subprocess.run(["powershell", "-NoProfile", "-Command", ps], check=True,
-                   capture_output=True,
-                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=25)
-    return {"ok": True, "speech": "Screenshot captured.", "data": {"path": str(out)}}
+    p = _capture_png()
+    return {"ok": True, "speech": "Screenshot captured.",
+            "data": {"path": str(p)}}
 
 
 @tool("screen_read", "Look at the screen and answer a question about it.",
       {"question": {"type": "string"}}, permission="read")
 def screen_read(question: str = "Describe what is on the screen.") -> dict:
-    import base64
+    from .llm import LLMUnavailable, chat_vision
 
-    shot = screenshot.__wrapped__ if hasattr(screenshot, "__wrapped__") else None
-    # reuse capture logic directly
-    import subprocess
-    import time as t
-    from .config import DATA
-
-    shots = DATA / "screenshots"
-    shots.mkdir(parents=True, exist_ok=True)
-    png = shots / f"read_{t.strftime('%Y%m%d_%H%M%S')}.png"
-    ps = (
-        "Add-Type -AssemblyName System.Windows.Forms,System.Drawing;"
-        "$b=[System.Windows.Forms.SystemInformation]::VirtualScreen;"
-        "$bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height;"
-        "$g=[System.Drawing.Graphics]::FromImage($bmp);"
-        f"$g.CopyFromScreen($b.Left,$b.Top,0,0,$bmp.Size);"
-        f"$bmp.Save('{png}');$g.Dispose();$bmp.Dispose()"
-    )
-    subprocess.run(["powershell", "-NoProfile", "-Command", ps], check=True,
-                   capture_output=True,
-                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=25)
-
-    from .llm import chat_vision
-
-    b64 = base64.b64encode(png.read_bytes()).decode("ascii")
-    answer = chat_vision(question.strip()[:300] or "Describe the screen.", b64, timeout=45)
+    png = _capture_png()
+    try:
+        answer = chat_vision(question.strip()[:300] or "Describe the screen.",
+                             png.read_bytes(), timeout=40)
+    except LLMUnavailable as exc:
+        return {"ok": False,
+                "speech": ("I captured the screen but my vision model is "
+                           f"unreachable ({str(exc)[:100]})."),
+                "data": {"path": str(png)}}
     return {"ok": True, "speech": answer[:600], "data": {}}
 
 

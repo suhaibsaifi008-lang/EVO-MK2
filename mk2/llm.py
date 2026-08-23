@@ -4,6 +4,7 @@ Roles: primary | fast | reasoning. Providers: any OpenAI-compatible endpoint
 first (OpenAI/OpenRouter/FreeLLMAPI/LM Studio), then Ollama. The rest of MK2
 never touches a provider directly.
 """
+import base64
 import json
 import time
 import re
@@ -118,6 +119,39 @@ def _completion(base: str, key: str, payload: dict, timeout: int = 60) -> dict:
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _deadline_iter(iterator, first_timeout: float = 20.0, gap_timeout: float = 25.0):
+    """Wrap a delta iterator so stalls become fast failures."""
+    import queue as _q
+
+    q_out: _q.Queue = _q.Queue()
+    _DONE = object()
+
+    def pump():
+        try:
+            for item in iterator:
+                q_out.put(item)
+        except BaseException as exc:  # noqa: BLE001
+            q_out.put(exc)
+        q_out.put(_DONE)
+
+    threading.Thread(target=pump, daemon=True).start()
+    started = time.time()
+    first = True
+    while True:
+        wait = first_timeout if first else gap_timeout
+        try:
+            item = q_out.get(timeout=wait)
+        except _q.Empty:
+            stage = "first token" if first else "gap"
+            raise LLMUnavailable(f"stream stalled ({stage}, {wait:.0f}s)")
+        first = False
+        if item is _DONE:
+            return
+        if isinstance(item, BaseException):
+            raise item
+        yield item
+
+
 def _gemini_client():
     from google import genai
 
@@ -176,11 +210,61 @@ def chat(messages: list[dict], temperature: float = 0.6, model: str = "",
     raise LLMUnavailable("; ".join(errors) or "nothing configured")
 
 
+def chat_vision(prompt: str, image_bytes: bytes, timeout: int = 45,
+                role: str = "vision") -> str:
+    """Ask a vision-capable model about an image (PNG/JPEG bytes)."""
+    errors = []
+    attempts = [a for a in _attempts(role) if a[0].get("name") == "gemini"] or _attempts(role)
+    for prov, m in attempts[:2]:
+        try:
+            if prov.get("kind") == "gemini":
+                client = _hard_bounded(lambda: _gemini_client(), 10)
+
+                def run_gemini():
+                    from google.genai import types
+
+                    part = types.Part.from_bytes(data=image_bytes, mime_type="image/png")
+                    resp = client.models.generate_content(
+                        model=m,
+                        contents=[prompt, part],
+                        config=types.GenerateContentConfig(temperature=0.2),
+                    )
+                    return (resp.text or "").strip()
+
+                text = _hard_bounded(run_gemini, timeout)
+                if text:
+                    return text
+                errors.append(f"gemini/{m}: empty")
+            else:
+                b64 = base64.b64encode(image_bytes).decode("ascii")
+                payload = {
+                    "model": m,
+                    "messages": [{"role": "user", "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url",
+                         "image_url": {"url": f"data:image/png;base64,{b64}"}},
+                    ]}],
+                    "temperature": 0.2,
+                    "max_tokens": 500,
+                }
+                data = _hard_bounded(
+                    lambda: _completion(prov["base"], prov["key"], payload, timeout),
+                    timeout,
+                )
+                text = data["choices"][0]["message"]["content"].strip()
+                if text:
+                    return text
+        except Exception as exc:
+            errors.append(f"{prov['name']}/{m}: {exc}")
+    raise LLMUnavailable("; ".join(errors) or "no vision provider")
+
+
 def chat_stream(messages: list[dict], temperature: float = 0.6, model: str = "",
                 role: str = "primary", timeout: int = 75):
     """Yield content deltas; per-provider native streaming with fallbacks."""
     errors = []
-    for prov, m in _attempts(role, model):
+    attempts = _attempts(role, model)
+    for idx, (prov, m) in enumerate(attempts):
         try:
             if prov.get("kind") == "gemini":
                 client = _hard_bounded(lambda: _gemini_client(), 10)
@@ -205,12 +289,9 @@ def chat_stream(messages: list[dict], temperature: float = 0.6, model: str = "",
                         if t:
                             yield t
 
-                started = time.time()
-                for delta in gen():
+                first_t = 8.0 if idx == 0 else 22.0
+                for delta in _deadline_iter(gen(), first_t, 25.0):
                     got = True
-                    # first token arrived: this provider is alive
-                    if time.time() - started > timeout:
-                        break
                     yield delta
                 if got:
                     return
@@ -226,22 +307,27 @@ def chat_stream(messages: list[dict], temperature: float = 0.6, model: str = "",
                                  "temperature": temperature, "stream": True}).encode(),
                 headers=headers, method="POST",
             )
+            def raw_stream():
+                with urllib.request.urlopen(req, timeout=timeout + prov["timeout_bias"]) as resp:
+                    for raw in resp:
+                        line = raw.decode("utf-8", "ignore").strip()
+                        if not line.startswith("data:"):
+                            continue
+                        data = line[5:].strip()
+                        if data == "[DONE]":
+                            return
+                        try:
+                            delta = json.loads(data)["choices"][0].get("delta", {}).get("content", "")
+                        except Exception:
+                            continue
+                        if delta:
+                            yield delta
+
             got = False
-            with urllib.request.urlopen(req, timeout=timeout + prov["timeout_bias"]) as resp:
-                for raw in resp:
-                    line = raw.decode("utf-8", "ignore").strip()
-                    if not line.startswith("data:"):
-                        continue
-                    data = line[5:].strip()
-                    if data == "[DONE]":
-                        return
-                    try:
-                        delta = json.loads(data)["choices"][0].get("delta", {}).get("content", "")
-                    except Exception:
-                        continue
-                    if delta:
-                        got = True
-                        yield delta
+            first_t = 10.0 if idx == 0 else 25.0
+            for delta in _deadline_iter(raw_stream(), first_t, 25.0):
+                got = True
+                yield delta
             if got:
                 return
         except Exception as exc:
