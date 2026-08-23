@@ -16,6 +16,10 @@ from . import brain, config, db, llm, tools
 app = FastAPI(title="EVO MK2")
 UI = Path(config.UI_DIR)
 
+from . import events_api as _events  # noqa: E402
+
+_events.register(app)
+
 _llm_probe = {"ts": 0.0, "ok": False, "probing": False}
 
 
@@ -57,6 +61,11 @@ class ChatIn(BaseModel):
 @app.get("/")
 def index():
     return FileResponse(UI / "index.html")
+
+
+@app.get("/face")
+def face():
+    return FileResponse(UI / "face.html")
 
 
 @app.get("/ui/{name}")
@@ -129,6 +138,41 @@ async def chat_stream(body: ChatIn, request=None):
 
     return StreamingResponse(source(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/tts")
+def tts(text: str):
+    """Hybrid voice: instant cached SAPI for short lines, neural for long."""
+    from fastapi import HTTPException
+    from fastapi.responses import Response
+
+    from .voice import tts_best
+
+    try:
+        path = tts_best.synthesize_best(" ".join((text or "").split())[:600])
+        data = path.read_bytes()
+        media = "audio/wav" if path.suffix == ".wav" else "audio/mpeg"
+        return Response(content=data, media_type=media,
+                        headers={"Cache-Control": "public, max-age=86400"})
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"tts unavailable: {exc}")
+
+
+@app.post("/api/transcribe")
+async def transcribe(request: Request) -> dict:
+    data = await request.body()
+    if len(data) < 100:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=400, detail="no audio")
+    from .voice import stt as mkstt
+
+    def work() -> str:
+        return mkstt.transcribe_wav(data)
+
+    loop = asyncio.get_running_loop()
+    text = await loop.run_in_executor(None, work)
+    return {"text": text}
 
 
 @app.get("/api/memory")

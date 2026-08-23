@@ -37,3 +37,7 @@ body{font-family:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;font-s
 #toasts{position:fixed;right:18px;top:18px;display:flex;flex-direction:column;gap:8px;z-index:60}
 .toast{background:var(--panel2);border:1px solid var(--ls);border-radius:12px;padding:11px 15px;font-size:13px;max-width:340px;box-shadow:0 10px 34px rgba(0,0,0,.5);animation:p .2s ease}@keyframes p{from{transform:translateY(-8px);opacity:0}}
 ::-webkit-scrollbar{width:10px}::-webkit-scrollbar-thumb{background:rgba(255,255,255,.09);border-radius:10px;border:2px solid transparent;background-clip:content-box}
+
+/* PTT */
+.btn.ptt { width:auto; padding:0 14px; font-size:12px; letter-spacing:1px; color:var(--t2); }
+.btn.ptt.on { color:#fff; background:linear-gradient(135deg,#e05656,#b33); border-color:transparent; animation:pulse 1.4s infinite; }

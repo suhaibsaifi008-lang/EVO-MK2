@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>EVO MK2 — Face</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<style>
+  :root { --acc:#6ea8fe; --acc2:#9b7bff; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#05070c; overflow:hidden; height:100vh;
+         font-family:"Segoe UI",system-ui,sans-serif; }
+  canvas { display:block; width:100vw; height:100vh; }
+  #state {
+    position:fixed; left:50%; bottom:6vh; transform:translateX(-50%);
+    color:#8fb8ff; letter-spacing:6px; font-size:12px; text-transform:uppercase;
+    opacity:.75; user-select:none;
+  }
+  #hint { position:fixed; right:16px; top:14px; color:#3d4a5f; font-size:11px; }
+</style>
+</head>
+<body>
+<canvas id="face"></canvas>
+<div id="state">BOOTING</div>
+<div id="hint">Esc to close</div>
+<script>
+// Face states: idle | listening | thinking | speaking
+let STATE = "idle";
+const setState = (s) => { STATE = s; document.getElementById("state").textContent = s; };
+
+const cv = document.getElementById("face"), cx = cv.getContext("2d");
+let W, H, t = 0;
+function resize() { W = cv.width = innerWidth; H = cv.height = innerHeight; }
+addEventListener("resize", resize); resize();
+
+/* particles on a ring around the core */
+const N = 90, parts = [];
+for (let i = 0; i < N; i++) parts.push({ a: Math.random()*Math.PI*2, r: .55 + Math.random()*.45, sp: .0015+Math.random()*.004, s: 1+Math.random()*2.2 });
+
+/* circuit traces */
+const traces = [];
+for (let i = 0; i < 26; i++) {
+  const y0 = Math.random();
+  traces.push({ x: Math.random(), y: y0, len: .06+Math.random()*.22, sp: .002+Math.random()*.01, w: Math.random()<.5?1:1.6, v: Math.random() });
+}
+
+let speakLevel = 0, listenPulse = 0;
+addEventListener("keydown", e => { if (e.key === "Escape") history.back(); });
+
+/* SSE hookup */
+try {
+  const es = new EventSource("/api/events");
+  es.onmessage = (m) => {
+    try {
+      const ev = JSON.parse(m.data);
+      if (ev.type === "voice.state") setState(ev.payload?.state === "session" ? "listening" : "idle");
+      if (ev.type === "convo.thinking") setState("thinking");
+      if (ev.type === "voice.speaking") setState("speaking");
+      if (ev.type === "convo.turn" || ev.type === "voice.turn") setState("speaking");
+    } catch {}
+  };
+} catch {}
+
+function draw() {
+  t += 1/60;
+  cx.fillStyle = "rgba(5,7,12,.28)"; cx.fillRect(0,0,W,H);
+
+  const cxp = W/2, cyp = H/2;
+  const baseR = Math.min(W,H)*0.16;
+
+  let R = baseR, glow = .35;
+  if (STATE === "listening") { R = baseR*(1.03+.05*Math.sin(t*3)); listenPulse += .04; glow=.6; }
+  else if (STATE === "thinking") { R = baseR*(1+.04*Math.sin(t*9)); glow=.5; }
+  else if (STATE === "speaking") { speakLevel += ((.5+.5*Math.sin(t*11))*(.35+.65*Math.random()) - speakLevel)*.35; R = baseR*(1+speakLevel*.22); glow=.75+.25*speakLevel; }
+  else { R = baseR*(1+.02*Math.sin(t*1.2)); glow=.32+.08*Math.sin(t*1.2); }
+
+  /* core */
+  const g = cx.createRadialGradient(cxp,cyp,R*.1,cxp,cyp,R*1.15);
+  g.addColorStop(0,`rgba(170,215,255,${.85*glow+.15})`);
+  g.addColorStop(.55,`rgba(110,168,254,${.5*glow})`);
+  g.addColorStop(1,"rgba(10,20,40,0)");
+  cx.beginPath(); cx.arc(cxp,cyp,R*1.15,0,7); cx.fillStyle=g; cx.fill();
+
+  /* rings */
+  for (const [rr,lw,a] of [[1.0,2,.9],[1.18,1.2,.55],[1.42,1,.3]]) {
+    cx.beginPath(); cx.arc(cxp,cyp,R*rr,t*(STATE==="thinking"?2.2:.6),t*(STATE==="thinking"?2.2:.6)+Math.PI*1.6);
+    cx.strokeStyle=`rgba(140,190,255,${a})`; cx.lineWidth=lw; cx.stroke();
+  }
+
+  /* particles */
+  for (const p of parts) {
+    p.a += p.sp*(STATE==="speaking"?2.4:STATE==="thinking"?1.8:STATE==="listening"?1.2:.7);
+    const rr = R*p.r*1.5;
+    const x = cxp+Math.cos(p.a)*rr, y = cyp+Math.sin(p.a)*rr*.92;
+    cx.beginPath(); cx.arc(x,y,p.s*(STATE==="speaking"?1.5:1),0,7);
+    cx.fillStyle=`rgba(150,200,255,${.25+.45*Math.abs(Math.sin(p.a*3))}`+")"; cx.fill();
+  }
+
+  /* circuit traces across screen */
+  for (const tr of traces) {
+    tr.v += tr.sp*(STATE==="speaking"?3:1);
+    if (tr.v>1) tr.v=0;
+    const x0=tr.x*W, y0=(tr.y%1)*H;
+    const x1=x0+tr.len*W*(tr.w>1?-1:1);
+    cx.strokeStyle=`rgba(90,140,220,${.10+.25*tr.v})`; cx.lineWidth=tr.w;
+    cx.strokeRect(Math.min(x0,x1),y0-1,Math.abs(x1-x0),2);
+    cx.beginPath(); cx.arc(x0,y0,2.4,0,7); cx.fillStyle=`rgba(140,190,255,${.15+.5*tr.v})`; cx.fill();
+  }
+
+  requestAnimationFrame(draw);
+}
+setState("idle"); draw();
+
+/* space bar = PTT hook if opener exposed it */
+addEventListener("keydown", e => {
+  if (e.code==="Space" && window.opener && window.opener.__pttToggle) { e.preventDefault(); window.opener.__pttToggle(); }
+});
+</script>
+</body>
+</html>

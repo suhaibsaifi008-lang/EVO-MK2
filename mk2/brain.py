@@ -86,6 +86,17 @@ def handle_turn(
 
     t0 = time.time()
 
+    # Fast-lane: obvious commands execute instantly, zero model calls.
+    from .fastlane import fast_command
+
+    instant = fast_command(text)
+    if instant is not None:
+        memory.record_turn(text, instant, surface)
+        emit({"type": "done", "text": instant})
+        db.trace(turn_id, "total_fastcmd", (time.time() - t0) * 1000)
+        bus.publish("convo.turn", {"id": turn_id, "text": text, "reply": instant})
+        return instant
+
     fast = _fast_path(text)
     if fast:
         memory.record_turn(text, fast, surface)

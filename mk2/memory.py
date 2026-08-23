@@ -20,6 +20,8 @@ EXPLICIT = re.compile(r"\bremember\b|\bkeep in mind\b", re.I)
 
 def build_context_messages(user_text: str, surface: str = "console") -> list[dict]:
     """System block (persona+state) + recent verbatim turns + current input."""
+    from . import vault
+
     persona = (
         f"You are {config.settings.name}, a warm, sharp personal assistant on the user's PC. "
         f"Address them as '{config.settings.user_address}' only when natural. "
@@ -28,7 +30,12 @@ def build_context_messages(user_text: str, surface: str = "console") -> list[dic
     )
     facts = "; ".join(f"{f['key']}={f['value']}" for f in db.all_facts(18)) or "none"
     episodes = db.recall_episodes(user_text, limit=3)
-    blocks = [f"Known facts: {facts}"]
+    vault_hits = vault.search_vault(user_text, limit=3)
+    notes_index = ", ".join(n["topic"] for n in vault.list_notes()[:20]) or "empty"
+    blocks = [f"Known facts: {facts}", f"Memory vault topics: {notes_index}"]
+    if vault_hits:
+        joined = " | ".join(f"{h['file']}: {h['snippet'][:120]}" for h in vault_hits)
+        blocks.append(f"Vault excerpts matching this message: {joined}")
     if episodes:
         joined = " | ".join(e["summary"][:200] for e in episodes)
         blocks.append(f"Relevant past episodes: {joined}")
@@ -76,6 +83,12 @@ def record_turn(user_text: str, reply: str, surface: str) -> None:
             v = str(item.get("value", "")).strip()[:300]
             if k and v:
                 db.remember_fact(k, v, source="inferred")
+                try:
+                    from . import vault
+
+                    vault.journal(f"fact: {k} = {v}")
+                except Exception:
+                    pass
     except Exception:
         pass
 

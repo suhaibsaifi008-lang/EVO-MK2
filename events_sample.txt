@@ -1,0 +1,4 @@
+data: {"type":"hello"}
+
+data: {"type": "convo.turn", "payload": {"id": "e8bae14dafe4", "text": "what is the time", "reply": "It is 21:32."}}
+

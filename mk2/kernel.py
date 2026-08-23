@@ -61,8 +61,30 @@ def main(voice: bool = True) -> None:
     bus.attach_loop(_loop)
 
     _supervise("server", _server_subsystem)
-    if voice:
+    import os
+
+    if voice and os.environ.get("EVO_WAKE", "0") == "1":
         _supervise("voice", _voice_subsystem)
+    elif not voice:
+        log.info("voice disabled (--no-voice)")
+    else:
+        log.info("wake-word idle (EVO_WAKE=0). Push-to-talk + /api/tts remain active.")
+
+    # Keep the local model resident: otherwise Ollama unloads after ~5 min
+    # idle and EVERY reply pays a 15s+ reload tax.
+    if os.environ.get("EVO_MODEL_WARMER", "1") == "1":
+
+        async def _warmer() -> None:
+            while True:
+                try:
+                    llm.chat([{"role": "user", "content": "ping"}],
+                             role="fast", temperature=0, timeout=10,
+                             bias=False, max_providers=1)
+                except Exception:
+                    pass
+                await asyncio.sleep(240)
+
+        _supervise("model-warmer", _warmer)
 
     from .config import settings
 

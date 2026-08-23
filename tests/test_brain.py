@@ -28,18 +28,21 @@ class TestFastPath:
 
 class TestToolLoop:
     def test_tool_then_final(self, monkeypatch, tmp_path):
+        """Searches run through the instant fast-lane: real tool, zero LLM."""
         monkeypatch.setattr(db, "DB_PATH", tmp_path / "t.db"); db.migrate()
-        seq = iter([
-            '{"tool": "web_search", "args": {"query": "evo mk2"}}',
-            '{"say": "Found two solid articles about EVO MK2."}',
-        ])
+        from mk2.tools import web_tools
+
+        monkeypatch.setattr(web_tools, "ddg_results",
+                            lambda q, max_results=5: [{"title": f"{q} guide", "url": "https://x.test"}])
+        llm_calls = []
         monkeypatch.setattr("mk2.llm.chat_stream",
-                            lambda *a, **k: iter([next(seq)]))
+                            lambda *a, **k: llm_calls.append(1) or (_ for _ in ()).throw(AssertionError("LLM used")))
         events = []
         reply = brain.handle_turn("search for evo mk2", on_event=events.append)
         kinds = [e["type"] for e in events]
-        assert "tool" in kinds and "done" in kinds
-        assert "EVO MK2" in reply or "articles" in reply
+        assert "done" in kinds
+        assert "guide" in reply
+        assert llm_calls == []  # instant, offline-capable
         audit = db.recent_audit()
         assert any(a["tool"] == "web_search" for a in audit)
 

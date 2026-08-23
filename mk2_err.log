@@ -1,2 +1,2 @@
-2026-08-23 20:24:39,090 mk2.kernel INFO EVO MK2 kernel online: http://127.0.0.1:8421
-2026-08-23 20:24:40,093 mk2.voice INFO voice gateway sleeping - say 'wake up evo/wake up e.v.o'
+2026-08-23 20:55:30,806 mk2.kernel INFO wake-word idle (EVO_WAKE=0). Push-to-talk + /api/tts remain active.
+2026-08-23 20:55:30,808 mk2.kernel INFO EVO MK2 kernel online: http://127.0.0.1:8421

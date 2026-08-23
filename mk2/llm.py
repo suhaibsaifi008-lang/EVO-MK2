@@ -5,6 +5,7 @@ first (OpenAI/OpenRouter/FreeLLMAPI/LM Studio), then Ollama. The rest of MK2
 never touches a provider directly.
 """
 import json
+import threading
 import urllib.error
 import urllib.request
 
@@ -15,6 +16,30 @@ ROLES = ("primary", "fast", "reasoning")
 
 class LLMUnavailable(RuntimeError):
     pass
+
+
+def _hard_bounded(fn, seconds: float):
+    """Run fn() with a HARD wall-clock limit.
+
+    Socket timeouts don't bound slow/trickling generations; a stuck call can
+    hold provider slots forever (this froze all of MK1's chat at one point).
+    """
+    box: dict = {}
+
+    def runner() -> None:
+        try:
+            box["r"] = fn()
+        except BaseException as exc:  # noqa: BLE001
+            box["e"] = exc
+
+    th = threading.Thread(target=runner, daemon=True, name="mk2-llm-call")
+    th.start()
+    th.join(max(1.0, float(seconds)))
+    if "r" not in box:
+        if "e" in box:
+            raise box["e"]
+        raise LLMUnavailable(f"timed out after {seconds:.0f}s")
+    return box["r"]
 
 
 def _providers() -> list[dict]:
@@ -84,10 +109,14 @@ def chat(messages: list[dict], temperature: float = 0.6, model: str = "",
         attempts = attempts[:max_providers]
     for prov, m in attempts:
         try:
-            data = _completion(
-                prov["base"], prov["key"],
-                {"model": m, "messages": messages, "temperature": temperature},
-                timeout=timeout + (prov["timeout_bias"] if bias else 0),
+            total = timeout + (prov["timeout_bias"] if bias else 0)
+            data = _hard_bounded(
+                lambda: _completion(
+                    prov["base"], prov["key"],
+                    {"model": m, "messages": messages, "temperature": temperature},
+                    timeout=total,
+                ),
+                total,
             )
             text = data["choices"][0]["message"]["content"].strip()
             if text:
