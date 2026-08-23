@@ -55,6 +55,9 @@ def main(voice: bool = True) -> None:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(name)s %(levelname)s %(message)s")
     db.migrate()
+    from . import jobs
+
+    jobs.resume_running()
     tools.load_builtin_tools()
     _loop = asyncio.new_event_loop()
     asyncio.set_event_loop(_loop)

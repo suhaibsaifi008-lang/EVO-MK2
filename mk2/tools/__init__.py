@@ -96,7 +96,7 @@ def ensure_loaded() -> int:
     if _loaded:
         return len(manifest())
     from . import system_tools, web_tools  # noqa: F401  (register side effects)
-    from .. import calendar_tools, research_tools, vault, work_tools  # noqa: F401  (work tools + vault)
+    from .. import calendar_tools, research_tools, skills, vault, work_tools  # noqa: F401  (work tools + vault)
 
     _loaded = True
     return len(manifest())

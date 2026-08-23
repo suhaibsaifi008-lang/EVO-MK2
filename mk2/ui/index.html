@@ -1,44 +1,49 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>EVO MK2 — Console</title>
-<link rel="stylesheet" href="/ui/style.css?v=2"/>
+<title>EVO MK2</title>
+<link rel="stylesheet" href="/ui/style.css?v=4"/>
 </head>
 <body>
 <canvas id="faceCanvas"></canvas>
-<div class="app">
-  <aside class="side">
-    <div class="brand"><div class="orb"></div><div><h1 id="brand">EVO<span>.MK2</span></h1><small>personal intelligence</small></div></div>
-    <div class="foot">
-      <label class="pill"><input type="checkbox" id="voiceOut" checked/><span>Voice replies</span></label>
-      <span id="conn" class="dot offline" title="server"></span>
-    </div>
-  </aside>
+<div id="app">
+  <header class="topbar">
+    <div class="brand"><span class="orb-dot"></span><b>EVO<span class="v2">MK2</span></b></div>
+    <div class="spacer"></div>
+    <span id="engineTag" class="tag">�</span>
+    <span id="conn" class="dot offline"></span>
+  </header>
+
   <main class="main">
-    <header class="top"><h2>Console</h2><span id="engineTag" class="tag">…</span></header>
-    <section class="stage">
-      <div class="scroll">
-        <div class="hero" id="hero">
-          <h2 id="greet">Systems online.</h2>
-          <p class="sub">Press MIC, speak, release — or just type. No wake word needed.</p>
-        </div>
-        <div id="log" class="log"></div>
+    <div class="scroll" id="scrollArea">
+      <div class="hero" id="hero">
+        <h1 id="greet">Systems online.</h1>
+        <p>Ask anything, or use the mic. I act � not just answer.</p>
       </div>
-      <form id="chatForm" class="composer">
-        <div id="sttPreview" class="stt-preview"></div>
-        <div class="pillbar">
-          <textarea id="chatInput" rows="1" placeholder="Message EVO…  (Enter to send · Esc to stop)"></textarea>
-          <button type="button" id="pttBtn" class="btn ptt" title="Push to talk">🎙 MIC</button>
-          <button type="button" id="stopBtn" class="btn stop">■</button>
-          <button type="submit" class="btn send">➤</button>
-        </div>
-      </form>
-    </section>
+      <div id="log" class="log"></div>
+    </div>
   </main>
+
+  <form id="chatForm" class="composer-wrap" autocomplete="off">
+    <div id="sttPreview" class="stt-preview"></div>
+    <div class="composer">
+      <button type="button" id="pttBtn" class="icon-btn ptt" title="Push to talk">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>
+      </button>
+      <textarea id="chatInput" rows="1" placeholder="Message EVO�"></textarea>
+      <button type="button" id="stopBtn" class="icon-btn stop-btn hidden">�</button>
+      <button type="submit" class="send-btn" title="Send">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/></svg>
+      </button>
+    </div>
+    <div class="composer-foot">
+      <label class="toggle"><input type="checkbox" id="voiceOut" checked/><span>?? Voice replies</span></label>
+    </div>
+  </form>
 </div>
 <div id="toasts"></div>
-<script src="/ui/app.js?v=2"></script>
+<script src="/ui/app.js?v=4"></script>
 </body>
 </html>
