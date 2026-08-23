@@ -57,25 +57,41 @@ def deep_research(topic: str) -> dict:
     if not topic:
         raise ValueError("empty topic")
 
+    _emit("searching web sources...")
     sources = _gather_sources(topic)
-    if not sources:
-        return {"ok": False, "speech": f"I couldn't reach any sources about {topic}.",
-                "data": {}}
+    has_sources = len(sources) > 0
+    if not has_sources:
+        _emit("web search unavailable - using AI knowledge...")
 
-    material = "\n\n".join(f"[{i+1}] {s['url']}\n{s['text'][:1200]}"
-                           for i, s in enumerate(sources))[:9000]
 
     from .llm import chat
 
+    if has_sources:
+        material = "\n\n".join(
+            f"[{i+1}] {src['url']}\n{src['text'][:1200]}"
+            for i, src in enumerate(sources))[:9000]
+        synth_prompt = (
+            f"Topic: {topic}\n\nMaterial:\n{material}"
+        )
+        synth_system = (
+            "You are a research analyst. Using ONLY the material provided, "
+            "write a concise briefing on the topic: key facts, notable "
+            "disagreements between sources, and open questions. Cite sources "
+            "as [1], [2]. Max 350 words."
+        )
+    else:
+        synth_prompt = topic
+        synth_system = (
+            "Write a concise research briefing on this topic from your knowledge. "
+            "Include key facts, current state, and recommendations. "
+            "Use markdown sections. Max 300 words. "
+            "Note that you could not access live web sources."
+        )
+
     report = chat(
         [
-            {"role": "system",
-             "content": ("You are a research analyst. Using ONLY the material provided, "
-                         "write a concise briefing on the topic: key facts, notable "
-                         "disagreements between sources, and open questions. Use short "
-                         "markdown sections and cite sources as [1], [2] matching the "
-                         "numbered material. Max 350 words.")},
-            {"role": "user", "content": f"Topic: {topic}\n\nMaterial:\n{material}"},
+            {"role": "system", "content": synth_system},
+            {"role": "user", "content": synth_prompt},
         ],
         role="primary", temperature=0.3, timeout=60,
     )
@@ -84,7 +100,7 @@ def deep_research(topic: str) -> dict:
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
     refs = "\n".join(f"[{i+1}] {s['url']}" for i, s in enumerate(sources))
     doc = (f"# Research: {topic}\n\n"
-           f"*{stamp} · {len(sources)} sources*\n\n"
+           f"*{stamp} · {len(sources)} sources*" if has_sources else f"*{stamp} · AI knowledge*"
            f"{report}\n\n## Sources\n{refs}\n")
 
     from .vault import write_note

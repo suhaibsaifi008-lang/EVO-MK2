@@ -15,34 +15,51 @@ def _get(url: str, timeout: int = 10) -> str:
         return resp.read().decode(charset, "ignore")
 
 
-def ddg_results(query: str, max_results: int = 5) -> list[dict]:
+def _try_ddg(query: str, max_results: int) -> list[dict]:
     raw = _get("https://lite.duckduckgo.com/lite/?q=" + urllib.parse.quote_plus(query))
     out = []
-    for m in re.finditer(r'(?is)<a[^>]+href="[^"]*uddg=([^&"\']+)[^"]*"[^>]*>(.*?)</a>', raw):
-        url = urllib.parse.unquote(htmllib.unescape(m.group(1)))
-        if "duckduckgo.com" in url:
+    for m in re.finditer(r'(?is)<a[^>]+href="([^"]*)"[^>]*>(.*?)</a>', raw):
+        href = m.group(1)
+        title = re.sub(r"(?s)<[^>]+>", "", htmllib.unescape(m.group(2))).strip()
+        real_url = ""
+        if "uddg=" in href:
+            real_url = urllib.parse.unquote(href.split("uddg=")[-1].split("&")[0])
+        elif href.startswith("http"):
+            real_url = href
+        if real_url and "duckduckgo" not in real_url and len(title) >= 4:
+            out.append({"title": title[:120], "url": real_url})
+    return out[:max_results]
+
+
+def _try_bing(query: str, max_results: int) -> list[dict]:
+    raw = _get("https://www.bing.com/search?q=" + urllib.parse.quote_plus(query))
+    out = []
+    # Bing changes HTML often — match ANY link that goes to a non-Bing domain
+    for m in re.finditer(r'<a[^>]+href="(https?://[^"]+)"[^>]*>(.*?)</a>', raw):
+        url = m.group(1)
+        if "bing.com" in url or "microsoft" in url or "msn.com" in url:
             continue
         title = re.sub(r"(?s)<[^>]+>", "", htmllib.unescape(m.group(2))).strip()
-        if len(title) >= 4:
-            out.append({"title": title[:120], "url": url})
-        if len(out) >= max_results:
-            break
-    if not out:
-        return _bing_results(query, max_results)
-    return out
-
-
-def _bing_results(query: str, max_results: int = 5) -> list[dict]:
-    raw = _get("https://www.bing.com/search?q=" + urllib.parse.quote_plus(query), timeout=10)
-    out = []
-    for m in re.finditer(r'(?is)<li class="b_algo".*?<h2><a href="(https?://[^"]+)"[^>]*>(.*?)</a></h2>', raw):
-        url = m.group(1)
-        title = re.sub(r"(?s)<[^>]+>", "", htmllib.unescape(m.group(2))).strip()
-        if len(title) >= 4 and "bing.com" not in url:
+        if len(title) >= 10 and "." in url.split("//")[-1].split("/")[0]:
             out.append({"title": title[:120], "url": url})
         if len(out) >= max_results:
             break
     return out
+
+
+def ddg_results(query: str, max_results: int = 5) -> list[dict]:
+    """Multi-engine search with automatic fallback.
+    Tries DDG lite, then Bing. Returns whatever it finds."""
+    for engine_fn in (_try_ddg, _try_bing):
+        try:
+            results = engine_fn(query, max_results)
+            if results:
+                return results
+        except Exception:
+            continue
+    return []
+
+
 
 
 def fetch_page_text(url: str, max_chars: int = 3000) -> str:

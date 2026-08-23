@@ -62,6 +62,18 @@ def fast_command(text: str) -> str | None:
 
 
 def _single(t: str) -> str | None:
+    # time / date ---------------------------------------------------------
+    if re.search(r"\bwhat time\b|\bcurrent time\b|^time$", t):
+        from datetime import datetime as dt
+
+        return dt.now().strftime("It is %H:%M.")
+    if re.search(r"\bwhat day\b|\bwhat.s the date\b|todays date|^date$", t):
+        from datetime import datetime as dt
+
+        return dt.now().strftime("Today is %A, %d %B %Y.")
+
+    # screen awareness -> vision tool directly
+
     # volume / media -------------------------------------------------------
     if re.fullmatch(r"(?:volume|sound) (?:up|louder)", t):
         return tools.call("volume", {"action": "up"})["speech"]
@@ -71,7 +83,7 @@ def _single(t: str) -> str | None:
         return tools.call("volume", {"action": "mute"})["speech"]
 
     # screen awareness -----------------------------------------------------
-    if re.search(r"(what.s on my screen|on my screen right now|read my screen|see my screen)", t):
+    if re.search(r"(what.s? on my screen|whats on my screen|on my screen right now|read my screen|see my screen)", t):
         r = tools.call("screen_read")
         return r["speech"] if r["ok"] else None
 
