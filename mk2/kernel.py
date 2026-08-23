@@ -1,6 +1,7 @@
 ﻿"""Kernel: owns the loop, supervises subsystems, restarts on death."""
 import asyncio
 import logging
+import os
 
 from . import db, llm, tools
 from .bus import bus
@@ -88,8 +89,6 @@ def main(voice: bool = True) -> None:
 
     if os.environ.get("EVO_AWARENESS", "1") == "1":
         _supervise("awareness", _awareness_loop)
-
-    import os
 
     if voice and os.environ.get("EVO_WAKE", "0") == "1":
         _supervise("voice", _voice_subsystem)
