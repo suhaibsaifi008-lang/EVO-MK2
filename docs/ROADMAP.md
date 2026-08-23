@@ -1,127 +1,226 @@
-# EVO MK2 — Completion Roadmap
-**Goal:** full movie-Jarvis capability set (minus hardware, voice deferred) with zero accumulated bugs.
-**Method:** every milestone ships only with tests + a golden scenario + manual QA gate. Nothing merges red.
+# EVO MK2 — The 7 Phases to Real Jarvis
+
+> **Goal:** transform EVO from a chatbot into a proactive, autonomous, self-expanding personal intelligence — movie-Jarvis minus the hardware.
+>
+> **Voice/speech/mic: PARKED.** Architecture is ready (`EVO_WAKE=1`), will be revisited after Phase 7.
 
 ---
 
-## Capability Coverage Map (Jarvis trait → MK2 milestone)
+## What's Already Built (v0.2)
 
-| # | Jarvis capability | Milestone |
-|---|---|---|
-| C1 | Total digital context (email/calendar/files) | M2, M6 |
-| C2 | Deep research in minutes | M3 |
-| C3 | Document/web ingestion + Q&A memory | M3, M4 |
-| C4 | Screen & vision awareness | M2 |
-| C5 | Files/documents control by voice/text | M2 |
-| C6 | Reminders, timers, alarms | M2 |
-| C7 | Calendar awareness (today/upcoming) | M2, M5 |
-| C8 | Background autonomous missions | M4 |
-| C9 | Self-expanding skills | M4 |
-| C10 | Watchers (battery/disk/page/news/security) | M5 |
-| C11 | Spoken daily briefing | M5 |
-| C12 | Notification arbitration (knows when to shut up) | M5 |
-| C13 | Communication proxy (mail triage/draft/send-gated) | M6 |
-| C14 | Phone presence (Telegram) | M6 |
-| C15 | Personality + tone adaptation | M7 |
-| C16 | Nightly regression replays (never regress again) | M7 (harness starts M2) |
-| — | Duplex voice | PARKED (architecture ready: EVO_WAKE=1) |
+| Capability | How it works |
+|---|---|
+| Instant commands (<250ms) | Fast-lane: open/close apps/sites, volume, time, screenshots |
+| Streaming chat via FreeLLMAPI | 203 models, auto-routing, failover across providers |
+| Screen vision | Screenshot → Gemini vision → describe/answer |
+| Deep research | Multi-source search → synthesis → cited report |
+| Reminders with dispatcher | Due-dispatcher fires exactly once, delivered via SSE |
+| Markdown vault | Human-readable memory files you can edit yourself |
+| Semantic facts | Key-value upserts injected into every conversation |
+| File system control | Read/write/search inside allowed folders only |
+| Document reading | PDF, DOCX, CSV, MD, JSON |
+| Shell commands | Sandboxed PowerShell with audit trail |
+| Audit ledger | Every tool call logged immutably |
+| Self-diagnosis | `/api/diag` reports every subsystem's health in one call |
+| Living orb face | Canvas animation reacting to listen/think/speak states |
 
 ---
 
-## M2 — REAL WORK FOUNDATION  *(files · vision · time · calendar-read)*
-**New modules:** `mk2/fs_tools.py`, `mk2/vision_tools.py`, `mk2/time_tools.py`, `mk2/calendar_tools.py`, `reminders` table + due-dispatcher in kernel.
+## PHASE 1 — AWARENESS
+*"Jarvis always knows."*
 
-Tools added:
-- `fs_read(path)` / `fs_write(path, content)` / `fs_search(dir, pattern)` — path allowlist: `~/Documents`, `~/Desktop`, `~/Downloads`, `EVO-MK2/data`. Anything outside → `PermissionDenied`.
-- `docs_read(path)` — .txt/.md/.csv native; .pdf via pypdf; .docx via python-docx.
-- `screenshot()` — PowerShell capture → `data/screenshots/*.png`; returns path.
-- `screen_read(question?)` — screenshot → vision-role model describes/answers (uses router `vision` role).
-- `clipboard_get/set` — PowerShell bridge.
-- `reminder_add(text, when)/list/cancel(id)` — DB-backed; kernel tick fires due items onto bus → console toast (+TTS later).
-- `calendar_today/upcoming` — reads iCal URL (Settings), minimal VEVENT parser, timezone-safe.
+EVO stops being reactive and becomes aware of your world.
 
-Acceptance:
-- [ ] Path escape attempt (`..\\..`) → denied + audited
-- [ ] "What's on my screen?" returns accurate description of a known window
-- [ ] Reminder fires within 5s of due time, exactly once
-- [ ] iCal fixture parses 10/10 events with correct times
-- [ ] New unit tests ≥ 20; full suite green; 1 golden scenario added
+### Build
+- `watchers.py` — background polling engine for battery, disk, processes, web pages
+- `arbiter.py` — priority tiers + quiet hours + dedup + max-interruptions-per-hour
+- `briefing.py` — composes daily summary from weather + calendar + tasks + watcher outputs
+- `context_tracker.py` — tracks focused app, clipboard content patterns
 
-## M3 — RESEARCH & KNOWLEDGE ENGINE
-**New:** `research.py` pipeline, `knowledge` table + FTS5 index, `yt_tools.py`.
+### Tools Added
+- `watcher_add(kind, target, threshold)` / `watcher_list` / `watcher_remove(id)`
+- `briefing_now`
 
-- `deep_research(topic)` **job**: multi-query search → fetch top pages → extract → synthesize (primary role) → report saved to `vault/reports/<slug>.md` → episode logged. Progress streamed on bus.
-- `ingest_url(url)` / `ingest_file(path)` → chunked into knowledge FTS index.
-- `recall_knowledge(query)` tool → top passages (FTS5 rank + recency).
-- `youtube_summary(url)` — transcript fetch + fast-model summary.
-- Long-task UX: live progress chips in console; cancellable.
-
-Acceptance:
-- [ ] Mocked end-to-end research produces a cited markdown report
-- [ ] Ingested doc answers a factual question via recall
-- [ ] YouTube link returns a correct 5-bullet summary (live QA)
-- [ ] Jobs survive kernel restart mid-run (resume test)
-
-## M4 — AUTONOMY (missions v2 + skill forge)
-**New:** `jobs_runner` subsystem consuming the `jobs` table; `skills/` dir + forge tools.
-
-- Orchestrator gains `task_start(goal)` → creates job, spawns worker thread with restricted toolset `{web_search, web_fetch, fs_write, vault_write, docs_read}` and its own step budget.
-- Checkpoint after EVERY step; `task_resume(id)` continues; crash-safe by construction.
-- Repeated-intent detector proposes skills: *"You've done X 3 times — make it a skill?"* → `skill_save(name, code)` with test-run before arming (MK1 concept, hardened).
-- Skills callable as tools forever after; listed in manifest.
-
-Acceptance:
-- [ ] Kill -9 kernel mid-job → restart → job resumes at last checkpoint
-- [ ] Skill saved with failing code is rejected, never registered
-- [ ] Manifest grows dynamically and orchestrator uses the new skill unprompted
-
-## M5 — PROACTIVE JARVIS
-**New:** `watchers.py` engine, `arbitration.py`, `briefing.py`, `weather.py` (open-meteo, keyless).
-
-Watcher kinds: `battery_low`, `disk_high`, `page_changed(url hash)`, `news_keyword(search)`, `calendar_soon(mins)`.
-Arbiter rules (hard-coded policy engine): priority tiers, quiet hours, dedup window, max interruptions/hour → survivors become console toasts + spoken line (TTS if enabled).
-
-Daily briefing (08:00 default, configurable): weather + today's calendar + due reminders + overnight watcher hits + open jobs status → composed → saved to vault/journal → spoken/printed.
-
-Acceptance:
-- [ ] Battery watcher fires once (not repeatedly) under threshold
-- [ ] Page-change detected between two fetched snapshots
-- [ ] Quiet-hours suppresses toasts but still queues them
-- [ ] Briefing includes ≥4 sections and runs <10s
-
-## M6 — PRESENCE (phone + comms)
-**New:** `telegram_link.py` (long-polling, pairing-locked chat id), `mail_tools.py` (IMAP read + SMTP draft-first send), optional ntfy push.
-
-- Telegram: same brain, `surface="telegram"`; /pair flow; deny-by-default.
-- Mail: `mail_unread`, `mail_read(n)`, `mail_draft(to,subject,body)` always shows draft; `mail_send` requires BOTH explicit approval and Setup toggle.
-- Push: watcher/briefing mirrors to phone via ntfy topic.
-
-Acceptance:
-- [ ] Unpaired chat_id gets zero responses
-- [ ] Draft never sends without approval flag
-- [ ] Telegram turn appears in console history identically
-
-## M7 — PERSONALITY, STYLE, EVAL HARNESS
-- `persona.md` loaded at boot (identity, humor range, address rules) — editable by user.
-- **Style controller**: post-pass on fast role — classifies user tone (angry/excited/technical/casual) → adjusts verbosity/formality of final answer; strips forbidden patterns.
-- **Replay harness** (`evals/replay.py` + `evals/scenarios.jsonl`): every milestone adds ≥1 recorded scenario (input → expected intent/tool/reply-contains). One command runs all against current stack; failures block release.
-- Latency SLA report from traces: p50/p95 per stage printed after each replay run.
-
-Acceptance:
-- [ ] 60+ scenarios in replay set; suite green
-- [ ] Angry-tone input demonstrably yields shorter, calmer reply (mocked eval)
-- [ ] No turn in replay exceeds latency SLA without an annotated cause
+### Acceptance Criteria
+- [ ] Battery warning fires ONCE at threshold, not repeatedly
+- [ ] Daily briefing appears at configured time with weather + schedule + alerts
+- [ ] Page-change detected between two fetched snapshots of same URL
+- [ ] Quiet hours suppress toasts but queue them for later delivery
+- [ ] Max interruptions per hour enforced (no spam)
 
 ---
 
-## Anti-Bug Discipline (applies to every milestone)
-1. **Test gate:** no feature lands without unit tests covering happy path + failure path + permission denial.
-2. **Golden scenario:** each feature adds one replay scenario used forever after.
-3. **Hard bounds:** every network/model call wrapped in wall-clock deadline (no silent hangs — ever).
-4. **Audit everything:** every state-changing action lands in the ledger.
-5. **Trace SLAs:** new stages must log timings; replay fails on SLA breaches.
-6. **No regex for fuzzy problems, no LLM for exact problems** — deterministic lane stays deterministic.
-7. **One subsystem per commit-series; full suite green before commit.**
+## PHASE 2 — COMMUNICATION
+*"Jarvis handles all of Mr. Stark's correspondence."*
 
-## Suggested pace
-Fast-but-safe cadence assuming focused sessions: **M2 → M3 → M4 → M5 → M6 → M7**, roughly one to two sessions each. Voice re-entry happens AFTER M7, using the replay harness to validate it like everything else.
+EVO reaches beyond your machine.
+
+### Build
+- `telegram_link.py` — long-polling bot, pairing-locked chat IDs, same brain/tools/memory as console
+- `mail_tools.py` — IMAP read + SMTP send (draft-first, double-gated)
+- `push_notify.py` — ntfy.sh topic sends alerts to your phone
+
+### Tools Added
+- `mail_unread` / `mail_read(n)` / `mail_draft(to,subject,body)` / `mail_send_approved`
+- Telegram is a surface, not a tool — same brain responds
+
+### Acceptance Criteria
+- [ ] Telegram message triggers real action on PC (same tools as console)
+- [ ] Email draft shown but never sent without explicit approval flag AND Setup toggle
+- [ ] Unpaired Telegram chat_id gets zero responses
+- [ ] Push notification arrives on phone within 5s of trigger
+
+---
+
+## PHASE 3 — AUTONOMY
+*"Jarvis, handle it."* — and Jarvis handles it. For hours. Without supervision.
+
+### Build
+- Upgrade `jobs.py`: LLM-driven step planning (not just tool calls), strategy rotation on failures
+- Task dependencies: DAG-based chaining ("after researching X, write report")
+- Progress streaming to ALL surfaces simultaneously
+- Boot-time resume for interrupted missions
+- Result delivery fan-out (console + TTS if enabled + Telegram + push)
+
+### Tools Added
+- `task_start(goal)` / `task_status(id)` / `task_stop(id)` / `task_resume(id)`
+
+### Acceptance Criteria
+- [ ] Kill kernel mid-mission → restart → mission resumes from last checkpoint
+- [ ] Mission completes → result delivered to console AND Telegram AND push
+- [ ] Tool failure 3x → tries alternative approach before giving up
+- [ ] Mission with dependency waits for prerequisite to complete first
+
+---
+
+## PHASE 4 — DEEP INTELLIGENCE
+*"Jarvis, I need to know everything about this."*
+
+EVO gains real memory and multi-model reasoning.
+
+### Build
+- `deep_memory.py` — sqlite-vec vector store + local embedding model for episodic memory search
+- `rag.py` — document ingestion pipeline: chunk → embed → index → retrieve-augmented generation
+- `ensemble.py` — deep thought: parallel reasoning passes merged into superior answers
+- Knowledge graph table: subject-predicate-object triples
+
+### Tools Added
+- `remember_episode(text, importance)` / `search_episodes(query)`
+- `ingest_documents(folder)` / `ask_documents(question)`
+- `deep_thought(question)` — three specialist passes merged
+
+### Acceptance Criteria
+- [ ] "What did we discuss about scholarships three weeks ago?" returns accurate recall
+- [ ] Ingested PDF answers factual questions correctly via RAG
+- [ ] deep_thought produces measurably better answers on hard problems (evaluated by rubric)
+- [ ] Vector search returns semantically related (not just keyword-matched) episodes
+
+---
+
+## PHASE 5 — SELF-EXPANSION
+*"Jarvis builds his own tools."*
+
+### Build
+- Upgrade skills forge: AST-validate → sandbox test-run → register permanently
+- Workflow chains: YAML-defined sequences of skills run on schedule or trigger
+- Habit detection: track repeated intents → offer automation
+- API connector framework: declarative JSON specs turn any REST API into a tool
+
+### Tools Added
+- `workflow_create(yaml_def)` / `workflow_run(name)` / `workflow_list`
+- `connector_add(api_spec_json)` — instant new REST API tool
+- Habit proposals appear automatically after 3 repetitions
+
+### Acceptance Criteria
+- [ ] Skill saved with failing code is rejected and NOT registered
+- [ ] Skill saved with working code runs correctly on next invocation
+- [ ] Workflow executes 3 skills sequentially without intervention
+- [ ] New REST API connector works within one conversation turn
+
+---
+
+## PHASE 6 — SECURITY & LIFE ADMIN
+*"Jarvis protects Mr. Stark."*
+
+### Build
+- `security.py` — system monitoring, phishing detection, breach checks
+- `life_admin.py` — expense categorization, subscription audit
+- `vault_secrets.py` — Windows Credential Manager integration for API keys
+
+### Tools Added
+- `security_scan` / `breach_check(email)` / `url_check(url)`
+- `expense_summary(month)` / `subscription_audit`
+- `secret_store(key, value)` / `secret_get(key)`
+
+### Acceptance Criteria
+- [ ] Known-malicious URL flagged before browser opens
+- [ ] Breach check returns accurate results for test email
+- [ ] Subscription audit identifies at least one recurring charge
+- [ ] Secrets stored encrypted, never appear in logs or audit trail
+
+---
+
+## PHASE 7 — THE RELATIONSHIP
+*"Jarvis isn't software. He's a presence."*
+
+### Build
+- `persona_loader.py` — loads editable `persona.md` (identity, values, humor range)
+- `style_controller.py` — classifies user tone → adjusts response verbosity/formality/temperature
+- `initiative_engine.py` — EVO starts conversations based on watcher outputs + curiosity model
+- Opinion formation: tracks which answer styles get positive vs negative follow-up
+- Conversation compression: month-long chats stay coherent through importance-scored summarization
+
+### Tools Added
+- `set_persona(file_path)` / `get_persona_summary`
+
+### Acceptance Criteria
+- [ ] After 30 days, vault + persona file accurately represent the user
+- [ ] Angry input produces shorter, calmer reply (style controller working)
+- [ ] EVO initiates conversation about something interesting without being asked
+- [ ] No "As an AI" disclaimers, no forced "sir", no robotic phrasing in any reply
+
+---
+
+## Dependency Graph
+
+```
+Phase 1 (Awareness) ──────────┐
+                               ├──→ Phase 3 (Autonomy) ──→ Phase 5 (Self-expansion)
+Phase 2 (Communication) ──────┤
+                               ├──→ Phase 6 (Security)
+Phase 4 (Deep Intelligence) ───┤
+                               └──→ Phase 7 (Relationship)
+```
+
+Phases 1+2 can run in PARALLEL. Phase 3 needs both. Phase 4 is independent.
+Phases 5-7 build on everything before them.
+
+---
+
+## Anti-Bug Discipline (every phase, no exceptions)
+
+1. **Test gate:** happy path + failure path + permission denial tested
+2. **Golden scenario:** each feature adds one replay scenario used forever
+3. **Hard bounds:** every network/model call has wall-clock deadline
+4. **Audit everything:** state-changing actions logged immutably
+5. **Trace SLAs:** stage timings logged; replay fails on SLA breaches
+6. **No regex for fuzzy, no LLM for exact**
+7. **One subsystem per commit-series; full suite green before commit**
+
+## What Each Phase FEELS Like
+
+| Phase | The moment you notice |
+|---|---|
+| **1** | "It told me my battery was low BEFORE I asked" |
+| **2** | "I texted it from my car and it opened YouTube" |
+| **3** | "I asked it to compare 5 laptops and got a report 20 minutes later" |
+| **4** | "It remembered a conversation we had THREE WEEKS AGO" |
+| **5** | "It WROTE ITS OWN TOOL to solve a problem I didn't explain fully" |
+| **6** | "It blocked a phishing email before I saw it" |
+| **7** | "It disagreed with me and was right" |
+
+## Voice (PARKED)
+
+Architecture ready: Gemini Live duplex bridge coded, Vosk wake word + grammar rescue built,
+PTT button wired. Re-enable with `EVO_WAKE=1`. Will be revisited after Phase 7 using the
+replay harness to validate quality like every other subsystem.
