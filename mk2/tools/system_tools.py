@@ -3,6 +3,7 @@ import os
 import shutil
 from pathlib import Path
 
+from .. import db as _db
 from . import tool
 import subprocess
 
@@ -24,7 +25,7 @@ APP_ALIASES = {
     "files": "explorer.exe", "cmd": "cmd.exe", "terminal": "wt.exe",
     "task manager": "taskmgr.exe", "control panel": "control.exe",
     "settings": "ms-settings:", "chrome": "chrome.exe", "edge": "msedge.exe",
-    "firefox": "firefox.exe", "spotify": "spotify.exe",
+    "firefox": "firefox.exe", "spotify": "spotify.exe", "brave": "brave.exe",
 }
 
 SITES = {
@@ -36,6 +37,7 @@ SITES = {
     "amazon": "https://www.amazon.in", "flipkart": "https://www.flipkart.com",
     "linkedin": "https://www.linkedin.com", "twitch": "https://www.twitch.tv",
     "stack overflow": "https://stackoverflow.com",
+    "brave search": "https://search.brave.com",
 }
 
 _apps_cache = {"items": None, "ts": 0.0}
@@ -101,13 +103,23 @@ def open_app(target: str) -> dict:
     raw = target.strip()
     t = raw.lower()
 
-    # 1) URL-ish → straight to browser
+    # 1) URL-ish → security gate, then browser
     url = raw if raw.startswith(("http://", "https://")) else None
     if url is None and "." in t and " " not in t and len(t.rsplit(".", 1)[-1]) <= 4:
         url = f"https://{raw}"
     if url:
+        from ..security import gate
+
+        allow, note = gate(url)
+        if not allow:
+            return {"ok": False,
+                    "speech": (f"I'm not opening that link - it looks "
+                               f"dangerous {note}. If you trust it, open it "
+                               "manually and I'll stand by."),
+                    "data": {"blocked": True}}
         webbrowser.open(url)
-        return {"ok": True, "speech": f"Opening {url}.", "data": {"url": url}}
+        speech = f"Opening {url}. {note}".strip()
+        return {"ok": True, "speech": speech, "data": {"url": url}}
 
     # 2) exact alias / site / installed-app name
     alias = APP_ALIASES.get(t)
@@ -163,14 +175,14 @@ def open_app(target: str) -> dict:
         return {"ok": True, "speech": f"Opening {display}.", "data": {}}
 
     # 5) Unknown → search the web instead of failing. Never crash.
-    from urllib.parse import quote_plus
+    from ..config import search_url
 
-    search_url = f"https://duckduckgo.com/?q={quote_plus(raw)}"
-    webbrowser.open(search_url)
+    search_page = search_url(raw)
+    webbrowser.open(search_page)
     note = f" (matched '{match}')" if match else ""
     return {"ok": True,
             "speech": f"I couldn't find an app called '{raw}'{note}, so I searched the web instead.",
-            "data": {"searched": True, "url": search_url}}
+            "data": {"searched": True, "url": search_page}}
 
 
 @tool("close_app", "Close app windows whose title contains the target.",
@@ -208,13 +220,40 @@ def volume(action: str) -> dict:
     return {"ok": True, "speech": f"Volume {action}.", "data": {}}
 
 
-@tool("web_search", "Search DuckDuckGo and return top result titles+links.",
+@tool("web_search", "Search the web. Returns top results PLUS an excerpt of the best page - read it and answer in your own words.",
       {"query": {"type": "string"}}, permission="read")
 def web_search(query: str) -> dict:
-    import urllib.parse
-
-    from .web_tools import ddg_results
+    from .web_tools import ddg_results, fetch_page_text
     rows = ddg_results(query, max_results=5)
-    speech = "; ".join(r["title"] for r in rows[:3]) or "No results."
-    return {"ok": bool(rows), "speech": f"Top results: {speech}", "data": {"results": rows}}
+    if not rows:
+        return {"ok": False,
+                "speech": "No results (web may be unreachable).",
+                "data": {"results": []}}
+    # Give the brain real material to synthesize from, not just titles.
+    excerpt = ""
+    for r in rows[:2]:
+        try:
+            text = fetch_page_text(r["url"], max_chars=1200)
+            if len(text) > 200:
+                excerpt = f"{r['title']}: {text}"
+                break
+        except Exception:
+            continue
+    # Phase 7.6: browsed pages become permanent RAG knowledge automatically
+    try:
+        if excerpt:
+            from .. import rag as rag_mod
+
+            url = next(r["url"] for r in rows)
+            pieces = rag_mod._chunks(excerpt)
+            blobs = rag_mod._embed_batch(pieces)
+            _db.chunk_delete_source(url)
+            for i, (piece, blob) in enumerate(zip(pieces, blobs)):
+                _db.chunk_add(url, i, piece, blob)
+    except Exception:
+        pass
+    speech = "; ".join(r["title"] for r in rows[:3])
+    return {"ok": True, "speech": f"Found: {speech}",
+            "data": {"results": rows,
+                     "excerpt": excerpt or "(pages unreadable)"}}
 

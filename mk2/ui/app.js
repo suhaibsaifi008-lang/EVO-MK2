@@ -79,6 +79,40 @@ function addMsg(text, who, opts) {
 }
 function setBody(el, text, who) { el.dataset.raw = text; el.innerHTML = who === "evo" ? mdLite(text) : esc(text); }
 
+/* speech: sentence-chained so long replies are never cut off midway */
+let speakToken = 0;
+function speakText(text) {
+  const myToken = ++speakToken;
+  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+  const sentences = String(text || "").split(/(?<=[.!?])\s+/).filter(s => s.trim());
+  const parts = [];
+  let buf = "";
+  for (const s of sentences) {
+    if ((buf + " " + s).trim().length > 280) { if (buf.trim()) parts.push(buf.trim()); buf = s; }
+    else buf = (buf ? buf + " " : "") + s;
+  }
+  if (buf.trim()) parts.push(buf.trim());
+  if (!parts.length) { faceState("idle"); return; }
+  faceState("speaking");
+  const playNext = () => {
+    if (myToken !== speakToken) return;              // superseded
+    if (i >= parts.length) { faceState("idle"); return; }
+    fetch(`/api/tts?text=${encodeURIComponent(parts[i].slice(0, 400))}`)
+      .then(r => r.ok ? r.blob() : null)
+      .then(b => {
+        if (myToken !== speakToken) return;
+        if (!b) { i++; playNext(); return; }
+        const a = new Audio(URL.createObjectURL(b));
+        currentAudio = a;
+        a.onended = () => { i++; playNext(); };
+        a.play().catch(() => { i++; playNext(); });
+      })
+      .catch(() => { i++; playNext(); });
+  };
+  let i = 0;
+  playNext();
+}
+
 async function sendStreaming(text) {
   text = (text || "").trim(); if (!text) return;
   addMsg(text, "user");
@@ -101,6 +135,7 @@ async function sendStreaming(text) {
         if (!line.startsWith("data:")) continue;
         let ev; try { ev = JSON.parse(line.slice(5)); } catch { continue; }
         if (ev.type === "thinking" && !acc) body.innerHTML = '<span class="typing"><i></i><i></i><i></i></span>';
+        else if (ev.type === "reset") { acc = ""; body.innerHTML = '<span class="typing"><i></i><i></i><i></i></span>'; }
         else if (ev.type === "progress") { const c = document.createElement("div"); c.className = "tool-chip"; c.innerHTML = `<b>⚙</b><i>${esc(ev.text)}</i>`; bubble.insertBefore(c, body); }
         else if (ev.type === "tool") { const c = document.createElement("div"); c.className = "tool-chip"; c.innerHTML = `<b>⚙ ${esc(ev.name)}</b><i>${esc(ev.brief)}</i>`; bubble.insertBefore(c, body); }
         else if (ev.type === "delta") { acc += ev.text; setBody(body, acc, "evo"); scrollArea.scrollTop = scrollArea.scrollHeight; }
@@ -109,13 +144,9 @@ async function sendStreaming(text) {
       }
     }
     if (!done) setBody(body, acc || "(no response)", "evo");
-    // TTS
+    // TTS — sentence-chained, full reply
     if ($("voiceOut").checked && acc) {
-      faceState("speaking");
-      fetch(`/api/tts?text=${encodeURIComponent(acc.slice(0, 400))}`)
-        .then(r => r.ok ? r.blob() : null)
-        .then(b => { if (b) { if (currentAudio) currentAudio.pause(); currentAudio = new Audio(URL.createObjectURL(b)); currentAudio.onended = () => faceState("idle"); currentAudio.play().catch(() => faceState("idle")); } })
-        .catch(() => faceState("idle"));
+      speakText(acc);
     } else faceState("idle");
   } catch (e) {
     if (!done && !acc) setBody(body, "Connection lost.", "evo");
@@ -174,12 +205,26 @@ async function pttFinish() {
   try {
     const wav = encodeWav(samples, rate);
     const res = await fetch("/api/transcribe", { method: "POST", body: wav });
-    if (!res.ok) throw new Error(String(res.status));
+    if (!res.ok) {
+      let why = "";
+      try {
+        const j = await res.json();
+        const d = j.detail ?? j.message ?? "";
+        if (typeof d === "string") why = d;
+        else if (Array.isArray(d)) why = d.map(e => e.msg || JSON.stringify(e)).join("; ");
+        else if (d) why = JSON.stringify(d);
+      } catch {}
+      throw new Error(`${res.status} ${why}`.trim());
+    }
     const data = await res.json(); $("sttPreview").textContent = "";
     const text = (data.text || "").trim();
     if (!text) { toast("Didn't catch that."); faceState("idle"); return; }
     sendStreaming(text);
-  } catch { $("sttPreview").textContent = ""; toast("Transcription failed."); faceState("idle"); }
+  } catch (e) {
+    $("sttPreview").textContent = ""; faceState("idle");
+    const msg = e && e.message ? e.message.replace(/\[object Object\]/g, "").trim() : "";
+    toast(`Transcription failed${msg ? ` (${msg})` : ""}. If it says "query/request", restart EVO - the server is running old code.`);
+  }
 }
 
 function encodeWav(int16, rate) {
@@ -215,6 +260,7 @@ $("chatInput").addEventListener("input", function () { this.style.height = "auto
    research completing, watcher alerts, etc. Without this, all
    those things happen server-side and are INVISIBLE to you. */
 const es = new EventSource("/api/events");
+const _lastProg = {};
 es.onmessage = (m) => {
   try {
     const ev = JSON.parse(m.data);
@@ -224,11 +270,16 @@ es.onmessage = (m) => {
       // Show as a prominent chat message so it can't be missed
       addMsg(text, "evo", { highlight: true });
       toast(text);
-      // Speak it aloud too
-      fetch(`/api/tts?text=${encodeURIComponent(text.slice(0, 300))}`)
-        .then(r => r.ok ? r.blob() : null)
-        .then(b => { if (b) new Audio(URL.createObjectURL(b)).play().catch(() => {}); })
-        .catch(() => {});
+      // Speak it aloud too — sentence-chained
+      speakText(text.slice(0, 600));
+    }
+    if (ev.type === "job.progress") {
+      const { id, goal, step, max_steps } = ev.payload || {};
+      const now = Date.now();
+      if (!_lastProg[id] || now - _lastProg[id] > 10000) {   // throttle
+        _lastProg[id] = now;
+        toast(`⚙ Mission #${id} · step ${step}/${max_steps}: ${goal}`);
+      }
     }
     if (ev.type === "system.voice") {
       faceState(ev.payload?.state === "session" ? "listening" : "idle");

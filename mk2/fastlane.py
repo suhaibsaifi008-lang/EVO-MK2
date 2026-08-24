@@ -41,7 +41,7 @@ def _youtube_search_url(query: str) -> str:
     return f"https://www.youtube.com/results?search_query={quote_plus(query)}"
 
 
-def fast_command(text: str) -> str | None:
+def fast_command(text: str, surface: str = "console") -> str | None:
     """Execute obvious commands directly. Returns spoken reply or None."""
     t = _normalize(text)
     if not t:
@@ -51,17 +51,17 @@ def fast_command(text: str) -> str | None:
     if len(parts) > 1:
         replies = []
         for part in parts:
-            r = fast_command(part)
+            r = fast_command(part, surface=surface)
             if r:
                 replies.append(r)
         if replies:
             return "; ".join(replies)
         return None
 
-    return _single(t)
+    return _single(t, surface=surface)
 
 
-def _single(t: str) -> str | None:
+def _single(t: str, surface: str = "console") -> str | None:
     # time / date ---------------------------------------------------------
     if re.search(r"\bwhat time\b|\bcurrent time\b|^time$", t):
         from datetime import datetime as dt
@@ -103,7 +103,7 @@ def _single(t: str) -> str | None:
         return f"Showing YouTube results for '{q}' — click the first video."
 
     # research -> background job, FULL REPORT shown in chat when done ------
-    m = re.fullmatch(r"(?:deep )?research(?: about)? (.+)", t)
+    m = re.fullmatch(r"(?:deep )?research(?: about| for| on)? (.+)", t)
     if m:
         topic = m.group(1).strip()
         # Strip trailing instructions the user appended
@@ -112,14 +112,19 @@ def _single(t: str) -> str | None:
             r"?(brief|summary|report|overview).*$",
             "", topic, flags=re.IGNORECASE
         ).strip()
+        # Strip leading filler so the topic is a clean noun phrase
+        topic = re.sub(r"^(?:the |a |an |about |for (?:the |a |an )?)+", "", topic,
+                       flags=re.IGNORECASE).strip(" ,.")
         topic = re.sub(r"\s+", " ", topic)
         if topic:
 
-            def _bg(topic=topic):
+            def _bg(topic=topic, surface=surface):
                 res = tools.call("deep_research", {"topic": topic})
-                # Show the FULL report in chat so the user can read it
                 report = res.get("data", {}).get("report", "")
                 text = report if report else res.get("speech", "Research failed.")
+                # Store in conversation memory so follow-up questions work
+                from . import db
+                db.log_message("assistant", text[:3000], surface=surface)
                 bus.publish("notify.out", {
                     "kind": "research",
                     "text": f"📄 Research complete:\n\n{text}",
@@ -172,10 +177,8 @@ def _single(t: str) -> str | None:
         r = tools.call("screenshot")
         return r["speech"] if r["ok"] else "Screenshot failed."
 
-    # search ------------------------------------------------------------------
-    m = re.fullmatch(r"(?:search(?: for)?|google|look up) (.+)", t)
-    if m:
-        r = tools.call("web_search", {"query": m.group(1).strip()})
-        return r["speech"] if r["ok"] else f"Search failed: {r['speech']}"
+    # NOTE: no fuzzy 'search for ...' lane here on purpose - questions go to
+    # the brain so it can reason, use context and synthesize a real answer
+    # (roadmap rule: no regex for fuzzy).
 
     return None

@@ -29,12 +29,16 @@ class TestFastLane:
         assert "opening" in r["reply"].lower()
         assert calls == []
 
-    def test_search_uses_tools(self, client, monkeypatch):
+    def test_search_now_goes_through_brain(self, client, monkeypatch):
+        """'search for X' is a question: LLM plans the tool call (no regex lane)."""
         from mk2.tools import web_tools
         monkeypatch.setattr(web_tools, "ddg_results",
                             lambda q, max_results=5: [{"title": f"{q} guide", "url": "https://x.test"}])
+        seq = iter(['{"tool":"web_search","args":{"query":"evo mk2"}}',
+                    '{"say":"Here is what I found about evo mk2."}'])
+        monkeypatch.setattr("mk2.llm.chat_stream", lambda *a, **k: iter([next(seq)]))
         r = client.post("/api/chat", json={"text": "search for evo mk2"}).json()
-        assert "guide" in r["reply"]
+        assert "found" in r["reply"].lower()
 
 
 class TestPTT:

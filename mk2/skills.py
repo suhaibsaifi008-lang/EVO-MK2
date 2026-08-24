@@ -21,6 +21,54 @@ CONTRACT = (
     "Do the work, print result to stdout, exit non-zero on failure."
 )
 
+# --- Phase 5: AST security audit -------------------------------------------
+# Skills are code EVO wrote for itself. Before anything is saved it must
+# pass a static audit: no process spawning, no raw sockets, no dynamic
+# execution, no filesystem escapes beyond the data dir. This is a
+# blocklist, not a sandbox - it raises the bar sharply and pairs with the
+# test-run gate below.
+BANNED_MODULES = {"subprocess", "socket", "ctypes", "multiprocessing",
+                  "http.server", "socketserver", "winreg"}
+BANNED_NAMES = {"eval", "exec", "compile", "__import__", "system", "popen",
+                "spawn", "fork", "kill"}
+
+
+def audit_code(code: str) -> None:
+    """Raise ValueError if the code touches banned capabilities."""
+    import ast as _ast
+
+    try:
+        tree = _ast.parse(code)
+    except SyntaxError as exc:
+        raise ValueError(f"syntax error: {exc}") from exc
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.Import):
+            for a in node.names:
+                root = a.name.split(".")[0]
+                if root in BANNED_MODULES or a.name in BANNED_MODULES:
+                    raise ValueError(f"banned module '{a.name}'")
+        elif isinstance(node, _ast.ImportFrom):
+            root = (node.module or "").split(".")[0]
+            if root in BANNED_MODULES or (node.module or "") in BANNED_MODULES:
+                raise ValueError(f"banned module '{node.module}'")
+        elif isinstance(node, _ast.Attribute):
+            if node.attr in BANNED_NAMES:
+                raise ValueError(f"banned call '.{node.attr}()'")
+        elif isinstance(node, (_ast.Call,)):
+            fn = node.func
+            name = getattr(fn, "id", None) or getattr(fn, "attr", None)
+            if name in BANNED_NAMES:
+                raise ValueError(f"banned call '{name}()'")
+
+
+def validate_code(code: str) -> None:
+    """Single gate used by save(): syntax + security audit."""
+    try:
+        ast.parse(code)
+    except SyntaxError as exc:
+        raise ValueError(f"syntax error: {exc}") from exc
+    audit_code(code)
+
 
 def _paths(name: str) -> tuple:
     clean = name.strip().lower().replace(" ", "_")
@@ -31,11 +79,13 @@ def _paths(name: str) -> tuple:
     return base.with_suffix(".py"), base.with_suffix(".json"), clean
 
 
-def validate_code(code: str) -> None:
-    try:
-        ast.parse(code)
-    except SyntaxError as exc:
-        raise ValueError(f"syntax error: {exc}") from exc
+def _paths(name: str) -> tuple:
+    clean = name.strip().lower().replace(" ", "_")
+    import re
+
+    clean = re.sub(r"[^a-z0-9_]", "", clean)[:40]
+    base = SKILLS_DIR / clean
+    return base.with_suffix(".py"), base.with_suffix(".json"), clean
 
 
 def save(name: str, description: str, code: str) -> dict:
@@ -127,7 +177,7 @@ def _register(clean: str, path: str) -> None:
     t = Tool(
         name=f"skill_{clean}",
         description=f"[learned skill] {desc or clean}",
-        args={},
+        args_schema={},
         permission="execute",
         fn=invoke,
     )

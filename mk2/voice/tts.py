@@ -12,9 +12,52 @@ from ..config import DATA
 TTS_DIR = DATA / "tts"
 TTS_DIR.mkdir(parents=True, exist_ok=True)
 
+CURATED_VOICES = [
+    "en-US-AndrewMultilingualNeural",   # most humanlike, warm male
+    "en-US-AvaMultilingualNeural",      # most humanlike, expressive female
+    "en-US-BrianMultilingualNeural",    # natural, casual male
+    "en-IN-PrabhatNeural",              # Indian English, male
+    "en-IN-NeerjaNeural",               # Indian English, female
+    "en-GB-RyanNeural",
+    "en-GB-SoniaNeural",
+    "en-US-GuyNeural",
+    "en-US-AriaNeural",
+]
+
+
+def _edge_voice() -> str:
+    import os
+
+    return (os.environ.get("EVO_TTS_VOICE", "").strip()
+            or "en-US-AndrewMultilingualNeural")
+
+
+def _sapi_voice_clause() -> str:
+    """Optional EVO_SAPI_VOICE: substring of a Windows voice name, e.g.
+    'Zira' or 'Hemant'. Empty = system default."""
+    import os
+
+    want = os.environ.get("EVO_SAPI_VOICE", "").strip()
+    if not want:
+        return ""
+    safe = want.replace("'", "''")
+    try:
+        match = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             f"(Get-SpeechVoice | Where-Object Name -like '*{safe}*'"
+             " | Select-Object -First 1).Name"],
+            capture_output=True, text=True, timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout.strip()
+        if match:
+            return f"$s.SelectVoice('{match}');"
+    except Exception:
+        pass
+    return ""
+
 
 def _sapi_wav(text: str) -> Path | None:
-    key = hashlib.sha1(("sapi|" + text).encode()).hexdigest()[:20] + ".wav"
+    key = hashlib.sha1(("sapi|" + os.environ.get("EVO_SAPI_VOICE", "") +
+                        "|" + text).encode()).hexdigest()[:20] + ".wav"
     out = TTS_DIR / key
     if out.exists() and out.stat().st_size > 512:
         return out
@@ -23,6 +66,7 @@ def _sapi_wav(text: str) -> Path | None:
     ps = (
         "Add-Type -AssemblyName System.Speech;"
         "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer;"
+        + _sapi_voice_clause() +
         f"$s.SetOutputToWaveFile('{tmp}');"
         f"$s.Speak('{safe}');"
         "$s.Dispose()"
@@ -50,7 +94,7 @@ def _edge_mp3(text: str, stop: threading.Event) -> Path | None:
         tmp = out.with_suffix(".part")
 
         async def gen():
-            com = edge_tts.Communicate(text[:800], "en-GB-RyanNeural")
+            com = edge_tts.Communicate(text[:800], _edge_voice())
             await asyncio.wait_for(com.save(str(tmp)), timeout=25)
 
         asyncio.run(gen())
@@ -137,3 +181,20 @@ class Speaker:
                 stale.unlink()
             except OSError:
                 pass
+
+
+def list_sapi_voices() -> list[str]:
+    import subprocess
+
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             "Add-Type -AssemblyName System.Speech;"
+             "(New-Object System.Speech.Synthesis.SpeechSynthesizer)"
+             ".GetInstalledVoices() | ForEach-Object "
+             "{ $_.VoiceInfo.Name }"],
+            capture_output=True, text=True, timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        return [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
+    except Exception:
+        return []

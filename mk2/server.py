@@ -7,7 +7,7 @@ import time
 from collections import deque
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -165,8 +165,6 @@ def tts(text: str):
 async def transcribe(request: Request) -> dict:
     data = await request.body()
     if len(data) < 100:
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=400, detail="no audio")
     from .voice import stt as mkstt
 
@@ -174,7 +172,12 @@ async def transcribe(request: Request) -> dict:
         return mkstt.transcribe_wav(data)
 
     loop = asyncio.get_running_loop()
-    text = await loop.run_in_executor(None, work)
+    try:
+        text = await loop.run_in_executor(None, work)
+    except ValueError as exc:  # bad wav payload
+        raise HTTPException(status_code=400, detail=f"bad audio: {exc}")
+    except RuntimeError as exc:  # vosk model missing
+        raise HTTPException(status_code=503, detail=str(exc))
     return {"text": text}
 
 
@@ -188,6 +191,25 @@ def diag():
     from . import diag as diag_mod
 
     return diag_mod.run_checks(include_network=False)
+
+
+@app.get("/api/pairing")
+def pairing():
+    """Phase 2 comms status: telegram pairing + push config."""
+    out = {"telegram": {"configured": False, "paired": False, "pairing_code": ""}}
+    try:
+        from . import telegram_link
+
+        out["telegram"] = telegram_link.status()
+    except Exception:
+        pass
+    try:
+        from . import push_notify
+
+        out["push"] = push_notify.status()
+    except Exception:
+        pass
+    return out
 
 
 @app.get("/api/audit")

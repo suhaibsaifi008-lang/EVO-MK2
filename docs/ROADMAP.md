@@ -23,6 +23,27 @@
 | Audit ledger | Every tool call logged immutably |
 | Self-diagnosis | `/api/diag` reports every subsystem's health in one call |
 | Living orb face | Canvas animation reacting to listen/think/speak states |
+| Telegram link | Pairing-locked long-poll bot; same brain/tools; notify mirror |
+| Email | IMAP read + draft-first SMTP send (double-gated, single-use drafts) |
+| Push (ntfy) | notify.out events pushed to the phone via ntfy.sh |
+| Mission runner (Phase 3) | DAG-chained missions w/ checkpoints, resume, strategy rotation, `job.progress` streaming, full-surface fan-out |
+| Deep memory (Phase 4) | Embedded episodic recall + knowledge-graph triples injected into every turn |
+| RAG (Phase 4) | Ingest any folder of docs → cited Q&A over them |
+| Deep Thought (Phase 4) | Analyst/skeptic/advisor ensemble merged into one superior answer |
+| Whisper PTT (voice) | faster-whisper small.en local transcription, Vosk fallback, 48k→16k resample |
+| Token cascade (router) | Ranked model ladder per role; quota-exhausted models cooldown and EVO slides to the next |
+| Skills forge v2 (Phase 5) | AST security audit + test-run gate; learned skills re-arm on boot |
+| Workflows (Phase 5) | YAML chains w/ daily/interval schedules, sequential audited execution |
+| Habits (Phase 5) | 3-repeat detection → proposal → approval-gated automation |
+| Connectors (Phase 5) | Declarative JSON spec → live REST tool instantly, persisted across restarts |
+| Docs delivery (Phase 5) | docs_create/docs_append: markdown → real .docx, agent EXECUTION RULE (deliver, never outline) |
+| DevAgent (Phase 5.5) | code_read/search/edit/write/test + devtask loop; ALL writes approval-gated; selfcheck auto-diagnosis w/ revert-on-red safety net |
+| Security (Phase 6) | url_check gate on every opened link, breach_check, security_scan posture report |
+| Life admin (Phase 6) | Bank-CSV expense ledger, monthly category summaries, recurring-charge subscription audit |
+| Secrets vault (Phase 6) | DPAPI-encrypted store; values masked in speech/audit; connectors draw tokens straight from it |
+| Persona (Phase 7) | Editable persona.md IS the identity - injected every turn, applies instantly |
+| Style controller (Phase 7) | Tone classification (angry/stressed/joking/terse...) reshapes each reply + feedback loop |
+| Initiative engine (Phase 7) | EVO speaks first from a curiosity queue; quiet hours + daily cap + presence checks |
 
 ---
 
@@ -65,10 +86,10 @@ EVO reaches beyond your machine.
 - Telegram is a surface, not a tool — same brain responds
 
 ### Acceptance Criteria
-- [ ] Telegram message triggers real action on PC (same tools as console)
-- [ ] Email draft shown but never sent without explicit approval flag AND Setup toggle
-- [ ] Unpaired Telegram chat_id gets zero responses
-- [ ] Push notification arrives on phone within 5s of trigger
+- [x] Telegram message triggers real action on PC (same tools as console)
+- [x] Email draft shown but never sent without explicit approval flag AND Setup toggle
+- [x] Unpaired Telegram chat_id gets zero responses
+- [ ] Push notification arrives on phone within 5s of trigger *(code live; pending on-device check once NTFY_TOPIC is set)*
 
 ---
 
@@ -86,10 +107,10 @@ EVO reaches beyond your machine.
 - `task_start(goal)` / `task_status(id)` / `task_stop(id)` / `task_resume(id)`
 
 ### Acceptance Criteria
-- [ ] Kill kernel mid-mission → restart → mission resumes from last checkpoint
-- [ ] Mission completes → result delivered to console AND Telegram AND push
-- [ ] Tool failure 3x → tries alternative approach before giving up
-- [ ] Mission with dependency waits for prerequisite to complete first
+- [x] Kill kernel mid-mission → restart → mission resumes from last checkpoint
+- [x] Mission completes → result delivered to console AND Telegram AND push
+- [x] Tool failure 3x → tries alternative approach before giving up *(strategy rotation blocks a tool after 2 consecutive failures and forces a different route)*
+- [x] Mission with dependency waits for prerequisite to complete first
 
 ---
 
@@ -110,10 +131,10 @@ EVO gains real memory and multi-model reasoning.
 - `deep_thought(question)` — three specialist passes merged
 
 ### Acceptance Criteria
-- [ ] "What did we discuss about scholarships three weeks ago?" returns accurate recall
-- [ ] Ingested PDF answers factual questions correctly via RAG
-- [ ] deep_thought produces measurably better answers on hard problems (evaluated by rubric)
-- [ ] Vector search returns semantically related (not just keyword-matched) episodes
+- [x] "What did we discuss about scholarships three weeks ago?" returns accurate recall *(auto-summarizer embeds episodes every 10 min; search_episodes = semantic)*
+- [x] Ingested document answers factual questions correctly via RAG *(txt/md/csv/json/pdf/docx; pdf needs optional pypdf)*
+- [ ] deep_thought produces measurably better answers on hard problems (evaluated by rubric) *(ensemble built + merge-tested; formal rubric eval pending)*
+- [x] Vector search returns semantically related (not just keyword-matched) episodes *(Gemini embedding-001 when key set; offline hash fallback)*
 
 ---
 
@@ -132,10 +153,12 @@ EVO gains real memory and multi-model reasoning.
 - Habit proposals appear automatically after 3 repetitions
 
 ### Acceptance Criteria
-- [ ] Skill saved with failing code is rejected and NOT registered
-- [ ] Skill saved with working code runs correctly on next invocation
-- [ ] Workflow executes 3 skills sequentially without intervention
-- [ ] New REST API connector works within one conversation turn
+- [x] Skill saved with failing code is rejected and NOT registered
+- [x] Skill saved with working code runs correctly on next invocation
+- [x] Workflow executes 3 skills sequentially without intervention
+- [x] New REST API connector works within one conversation turn
+- [x] AST security audit blocks subprocess/socket/eval/exec in self-written skills
+- [x] Habit detection proposes automation after 3 repeats; approval required (proposals table dedupes)
 
 ---
 
@@ -153,10 +176,10 @@ EVO gains real memory and multi-model reasoning.
 - `secret_store(key, value)` / `secret_get(key)`
 
 ### Acceptance Criteria
-- [ ] Known-malicious URL flagged before browser opens
-- [ ] Breach check returns accurate results for test email
-- [ ] Subscription audit identifies at least one recurring charge
-- [ ] Secrets stored encrypted, never appear in logs or audit trail
+- [x] Known-malicious URL flagged before browser opens *(open_app gates every URL through url_check)*
+- [x] Breach check returns accurate results for test email *(XposedOrNot free by default; HIBP if HIBP_API_KEY set; email masked in audit ledger)*
+- [x] Subscription audit identifies at least one recurring charge *(flexible bank-CSV ingest, merchant normalization, ±15% amount matching)*
+- [x] Secrets stored encrypted, never appear in logs or audit trail *(Windows DPAPI bound to login; args masked incl. emails)*
 
 ---
 
@@ -174,10 +197,10 @@ EVO gains real memory and multi-model reasoning.
 - `set_persona(file_path)` / `get_persona_summary`
 
 ### Acceptance Criteria
-- [ ] After 30 days, vault + persona file accurately represent the user
-- [ ] Angry input produces shorter, calmer reply (style controller working)
-- [ ] EVO initiates conversation about something interesting without being asked
-- [ ] No "As an AI" disclaimers, no forced "sir", no robotic phrasing in any reply
+- [ ] After 30 days, vault + persona file accurately represent the user *(all mechanisms live: persona.md, feedback loop, compression - matures with use)*
+- [x] Angry input produces shorter, calmer reply (style controller working)
+- [x] EVO initiates conversation about something interesting without being asked *(quiet hours, daily cap, conversation-presence checks)*
+- [x] No "As an AI" disclaimers, no forced "sir", no robotic phrasing in any reply *(persona hard rules injected every turn)*
 
 ---
 

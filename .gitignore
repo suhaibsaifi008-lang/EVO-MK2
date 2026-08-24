@@ -6,3 +6,8 @@ __pycache__/
 .pytest_cache/
 dist/
 build/
+
+# logs & local artifacts
+*.log
+/_*.py
+/test_good.wav

@@ -57,8 +57,44 @@ class Settings:
         "JARVIS_GEMINI_TEXT_MODEL", "gemini-3.5-flash-lite"))
     voice_engine: str = field(default_factory=lambda: _s("EVO_VOICE_ENGINE", "auto"))  # auto|live|local
 
+    # phase 2: communication ------------------------------------------------
+    telegram_token: str = field(default_factory=lambda: _s("TELEGRAM_BOT_TOKEN") or _s("JARVIS_TELEGRAM_TOKEN"))
+    mail_user: str = field(default_factory=lambda: _s("MAIL_ADDRESS"))
+    mail_password: str = field(default_factory=lambda: _s("MAIL_PASSWORD"))  # app password
+    mail_imap_host: str = field(default_factory=lambda: _s("MAIL_IMAP_HOST"))
+    mail_imap_port: int = field(default_factory=lambda: int(_s("MAIL_IMAP_PORT", "993")))
+    mail_smtp_host: str = field(default_factory=lambda: _s("MAIL_SMTP_HOST"))
+    mail_smtp_port: int = field(default_factory=lambda: int(_s("MAIL_SMTP_PORT", "465")))
+    mail_send_enabled: bool = field(default_factory=lambda: _s("MAIL_SEND_ENABLED", "0") == "1")
+    ntfy_topic: str = field(default_factory=lambda: _s("NTFY_TOPIC"))
+    ntfy_server: str = field(default_factory=lambda: _s("NTFY_SERVER", "https://ntfy.sh"))
+
+    # search engine used when EVO opens a search page for you
+    search_engine: str = field(default_factory=lambda: _s("EVO_SEARCH_ENGINE", "google").lower())
+
     host: str = field(default_factory=lambda: _s("EVO_HOST", "127.0.0.1"))
     port: int = field(default_factory=lambda: int(_s("EVO_PORT", "8421")))
+
+
+SEARCH_TEMPLATES = {
+    "google": "https://www.google.com/search?q={q}",
+    "brave": "https://search.brave.com/search?q={q}",
+    "duckduckgo": "https://duckduckgo.com/?q={q}",
+    "bing": "https://www.bing.com/search?q={q}",
+}
+
+
+def search_url(query: str) -> str:
+    """Build a search page URL from the configured engine (EVO_SEARCH_ENGINE:
+    google|brave|duckduckgo|bing, or a full custom template via
+    EVO_SEARCH_URL containing {q})."""
+    custom = os.environ.get("EVO_SEARCH_URL", "").strip()
+    template = custom or SEARCH_TEMPLATES.get(
+        os.environ.get("EVO_SEARCH_ENGINE", "google").strip().lower(),
+        SEARCH_TEMPLATES["google"])
+    import urllib.parse
+
+    return template.replace("{q}", urllib.parse.quote_plus(query.strip()))
 
 
 settings = Settings()

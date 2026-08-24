@@ -1,5 +1,6 @@
 ﻿"""Strict command grammar built from the machine's real apps/sites."""
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -30,12 +31,10 @@ TARGETS = {
 def _discover_more() -> set:
     extra = set()
     try:
-        base = __import__("pathlib").Path(
-            os.environ.get("PROGRAMDATA", ""), r"Microsoft\Windows\Start Menu\Programs"
-        )
-        base2 = __import__("pathlib").Path(
-            os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs"
-        )
+        from pathlib import Path
+
+        base = Path(os.environ.get("PROGRAMDATA", ""), r"Microsoft\Windows\Start Menu\Programs")
+        base2 = Path(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs")
         for b in (base, base2):
             if b.exists():
                 for p in list(b.rglob("*.lnk"))[:400]:

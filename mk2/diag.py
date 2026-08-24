@@ -28,6 +28,10 @@ def run_checks(include_network: bool = False) -> dict:
         db.get_setting("ping")
         return "ok"
 
+    def db_ok():
+        db.get_setting("ping")
+        return "ok"
+
     def vault_ok():
         d = DATA / "vault"
         d.mkdir(parents=True, exist_ok=True)
@@ -72,9 +76,13 @@ def run_checks(include_network: bool = False) -> dict:
     providers = [p["name"] for p in llm._providers()]
     errors = errlog.recent(10)
     down = [c for c in checks if not c["ok"]]
+    router = llm.diagnostics()
     return {
         "ok": all(c["ok"] for c in checks),
         "checks": checks,
         "providers": providers,
+        "router": {"ladders": router["ladders"],
+                   "cooling_down": router["cooling_down"],
+                   "measured_ttft_s": router.get("measured_ttft_s", {})},
         "recent_errors": errors,
     }

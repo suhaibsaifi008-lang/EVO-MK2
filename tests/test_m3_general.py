@@ -27,7 +27,7 @@ class TestGeneralOpen:
         monkeypatch.setattr("webbrowser.open", lambda u: opened.append(u))
         r = tools.call("open_app", {"target": "zzqxv blorptastic"})
         assert r["ok"] is True
-        assert opened and "duckduckgo.com" in opened[0]
+        assert opened and "google.com/search" in opened[0]  # EVO_SEARCH_ENGINE default
         assert "searched the web" in r["speech"]
 
     def test_any_installed_app_opens_via_lnk(self, monkeypatch, tmp_path):

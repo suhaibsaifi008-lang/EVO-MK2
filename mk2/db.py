@@ -67,7 +67,42 @@ CREATE TABLE IF NOT EXISTS reminders (
     fired INTEGER DEFAULT 0,
     created REAL
 );
+CREATE TABLE IF NOT EXISTS vec_chunks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    ord INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    embedding BLOB,
+    ts REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chunks_source ON vec_chunks(source);
 CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(ts DESC);
+CREATE TABLE IF NOT EXISTS triples (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    subject TEXT NOT NULL,
+    predicate TEXT NOT NULL,
+    object TEXT NOT NULL,
+    src TEXT DEFAULT 'inferred',
+    ts REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS proposals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    signature TEXT NOT NULL UNIQUE,
+    detail TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS expenses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    merchant TEXT NOT NULL,
+    category TEXT DEFAULT 'other',
+    amount REAL NOT NULL,
+    spent_on TEXT NOT NULL,
+    source TEXT DEFAULT '',
+    ts REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(spent_on);
 CREATE INDEX IF NOT EXISTS idx_traces_turn ON traces(turn_id);
 """
 
@@ -83,6 +118,14 @@ def connect() -> sqlite3.Connection:
 def migrate() -> None:
     with _lock, connect() as conn:
         conn.executescript(SCHEMA_V1)
+        # idempotent column migrations (existing installs)
+        jobs_cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
+        if "depends_on" not in jobs_cols:
+            conn.execute(
+                "ALTER TABLE jobs ADD COLUMN depends_on TEXT NOT NULL DEFAULT '[]'")
+        ep_cols = {r[1] for r in conn.execute("PRAGMA table_info(episodes)")}
+        if "embedding" not in ep_cols:
+            conn.execute("ALTER TABLE episodes ADD COLUMN embedding BLOB")
 
 
 def get_setting(key: str, default: str = "") -> str:
@@ -240,4 +283,97 @@ def reminders_pending() -> list[dict]:
 def reminder_cancel(rid: int) -> bool:
     with _lock, connect() as c:
         cur = c.execute("DELETE FROM reminders WHERE id=? AND fired=0", (int(rid),))
+        return cur.rowcount > 0
+
+
+# ---------------- phase 4: vectors + knowledge graph ----------------
+
+def chunk_add(source: str, ord_: int, text: str,
+              embedding: bytes | None) -> int:
+    with _lock, connect() as c:
+        cur = c.execute(
+            "INSERT INTO vec_chunks(source,ord,text,embedding,ts) VALUES(?,?,?,?,?)",
+            (source[:200], int(ord_), text[:4000], embedding, time.time()),
+        )
+        return int(cur.lastrowid or 0)
+
+
+def chunk_delete_source(source: str) -> int:
+    with _lock, connect() as c:
+        cur = c.execute("DELETE FROM vec_chunks WHERE source=?", (source,))
+        return cur.rowcount
+
+
+def all_chunks() -> list[dict]:
+    """Every stored chunk with its embedding BLOB (small corpora fit RAM)."""
+    with _lock, connect() as c:
+        rows = c.execute(
+            "SELECT id,source,ord,text,embedding FROM vec_chunks ORDER BY id"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def triple_add(subject: str, predicate: str, obj: str,
+               src: str = "inferred") -> None:
+    s, p, o = subject.strip().lower()[:120], predicate.strip().lower()[:80], \
+        obj.strip().lower()[:300]
+    if not (s and p and o):
+        return
+    with _lock, connect() as c:
+        dup = c.execute(
+            "SELECT 1 FROM triples WHERE subject=? AND predicate=? AND object=?",
+            (s, p, o)).fetchone()
+        if not dup:
+            c.execute(
+                "INSERT INTO triples(subject,predicate,object,src,ts) "
+                "VALUES(?,?,?,?,?)", (s, p, o, src[:40], time.time()))
+
+
+def triples_all(limit: int = 100) -> list[dict]:
+    with _lock, connect() as c:
+        rows = c.execute(
+            "SELECT subject,predicate,object FROM triples "
+            "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def set_episode_embedding(ep_id: int, embedding: bytes) -> None:
+    with _lock, connect() as c:
+        c.execute("UPDATE episodes SET embedding=? WHERE id=?", (embedding, ep_id))
+
+
+def episodes_with_embeddings(limit: int = 300) -> list[dict]:
+    with _lock, connect() as c:
+        rows = c.execute(
+            "SELECT id,summary,started_at,ended_at,importance,embedding "
+            "FROM episodes ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def proposal_add(kind: str, signature: str, detail: str) -> int | None:
+    """Insert once per unique signature. Returns id the FIRST time only."""
+    with _lock, connect() as c:
+        dup = c.execute(
+            "SELECT id FROM proposals WHERE signature=?",
+            (signature,)).fetchone()
+        if dup:
+            return None
+        cur = c.execute(
+            "INSERT INTO proposals(kind,signature,detail,created) VALUES(?,?,?,?)",
+            (kind[:40], signature[:200], detail[:600], time.time()))
+        return int(cur.lastrowid or 0)
+
+
+def proposals(status: str = "pending", limit: int = 10) -> list[dict]:
+    with _lock, connect() as c:
+        rows = c.execute(
+            "SELECT id,kind,detail,status,created FROM proposals "
+            "WHERE status=? ORDER BY id DESC LIMIT ?", (status, limit)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def proposal_set_status(pid: int, status: str) -> bool:
+    with _lock, connect() as c:
+        cur = c.execute("UPDATE proposals SET status=? WHERE id=?",
+                        (status, int(pid)))
         return cur.rowcount > 0

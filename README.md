@@ -31,12 +31,15 @@ is set; otherwise fully offline Vosk). Interrupt it anytime. "goodbye" ends the 
 | `mk2/brain.py` | Orchestrator loop (fast-path â†’ tool steps â†’ streamed answer) |
 | `mk2/memory.py` | Context builder + reflection-pass write policy |
 | `mk2/server.py` | FastAPI: SSE chat stream, health, audit/memory views |
+| `mk2/telegram_link.py` | Phase 2: pairing-locked Telegram bot (same brain, notify mirror) |
+| `mk2/mail_tools.py` | Phase 2: IMAP read + draft-first SMTP send (double-gated) |
+| `mk2/push_notify.py` | Phase 2: ntfy.sh push + notify.out bridge to the phone |
 | `mk2/voice/` | Gateway state machine, STT(+grammar rescue), TTS hybrid, Gemini Live |
 
 ## Tests
 
 ```powershell
-pytest tests -q        # 35 tests, ~2s
+pytest tests -q        # 84 tests, ~9s
 ```
 
 ## Milestones

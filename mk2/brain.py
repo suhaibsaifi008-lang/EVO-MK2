@@ -1,6 +1,7 @@
 ﻿"""Orchestrator: one agent loop, tools, streaming events, fast-path intents."""
 import json
 import re
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -9,7 +10,7 @@ from typing import Callable
 from . import db, llm, memory, tools
 from .bus import bus
 
-MAX_STEPS = 6
+MAX_STEPS = 10
 
 
 class TurnCancelled(Exception):
@@ -81,6 +82,36 @@ def parse_tool_call(raw: str) -> dict | None:
     return None
 
 
+CORE_TOOLS = {"web_search", "deep_thought", "docs_create",
+              "youtube_summarize", "remember_episode", "task_start"}
+
+
+def compact_manifest(text: str, manifest: list[dict]) -> str:
+    """Full specs only for tools relevant to this message; the rest ship as
+    bare names (prompt diet — prefill time scales with prompt size)."""
+    words = set(re.findall(r"[a-z]{3,}", text.lower()))
+    scored = []
+    for t in manifest:
+        hay = (t["name"] + " " + t["description"]).lower()
+        overlap = len(words & set(re.findall(r"[a-z]{3,}", hay)))
+        scored.append((overlap, t["name"], t))
+    scored.sort(key=lambda x: (-x[0], x[2]["name"]))
+    detailed_names = {name for s, name, _t in scored[:12] if s > 0}
+    detailed_names |= CORE_TOOLS
+
+    def _fmt(t: dict) -> str:
+        return f"- {t['name']}: {t['description'][:90]}"
+
+    detailed_lines = [_fmt(t) for t in manifest if t["name"] in detailed_names]
+    other_names = sorted(t["name"] for t in manifest
+                         if t["name"] not in detailed_names)
+    manifest_text = "\n".join(detailed_lines)
+    if other_names:
+        manifest_text += ("\nOther tools (use tool_help <name> for usage): "
+                          + ", ".join(other_names))
+    return manifest_text
+
+
 def handle_turn(
     text: str,
     surface: str = "console",
@@ -107,7 +138,7 @@ def handle_turn(
     # Fast-lane: obvious commands execute instantly, zero model calls.
     from .fastlane import fast_command
 
-    instant = fast_command(text)
+    instant = fast_command(text, surface=surface)
     if instant is not None:
         memory.record_turn(text, instant, surface)
         emit({"type": "done", "text": instant})
@@ -125,26 +156,46 @@ def handle_turn(
 
     messages = memory.build_context_messages(text, surface)
     manifest = tools.manifest()
-    manifest_text = "\n".join(
-        f"- {t['name']}: {t['description']} args={t['args']}" for t in manifest
-    )
+    manifest_text = compact_manifest(text, manifest)
 
     system_extra = (
         f"\nTOOLS (exact names only):\n{manifest_text}\n"
         'To act, reply ONLY {"tool":"name","args":{...}}. After tool results settle, '
         'reply ONLY {"say":"<final spoken answer>"} interpreting results naturally - '
-        "never dump raw output, never mention internal steps or tool names to the user."
+        "never dump raw output, never mention internal steps or tool names to the user. "
+        "When you have web_search results, ANSWER the question in your own words from "
+        "them - do not read out page titles. For genuinely hard multi-angle questions "
+        "(comparisons, decisions, tricky reasoning) prefer the deep_thought tool.\n"
+        "SPEECH RULE: write like a person talking. If you announce options, points, "
+        "steps or reasons you MUST list them immediately and completely - announcing "
+        "without listing is forbidden. No corporate filler ('By implementing these "
+        "strategies...'), no meta-commentary about your answer.\n"
+        "EXECUTION RULE: if asked for a report, file, document, note or deliverable - "
+        "DO IT: research what you need, then CREATE the real artifact with "
+        "docs_create/fs_write/vault_write and tell them where it is. NEVER reply with "
+        "just an outline, a plan, or steps you 'would' take. For huge asks (e.g. 1000 "
+        "pages) build a complete sensible version instead and say exactly what you made."
     )
     messages[0]["content"] += system_extra
 
     answer = ""
     fail_streak = 0
-    last_fail_tool = None
     last_fail_speech = ""
-    last_fail_tool = None
+    TURN_BUDGET = 45.0          # hard wall-clock cap for the whole turn
+
     for step in range(MAX_STEPS):
         if check_cancel():
             raise TurnCancelled()
+        remaining = TURN_BUDGET - (time.time() - t0)
+        if remaining <= 0:
+            break
+        # Last-step nudge: force a final spoken answer instead of more tools
+        if step == MAX_STEPS - 1:
+            messages.append({"role": "system",
+                             "content": ("FINAL STEP: you must finish NOW. "
+                                         'Reply ONLY {"say": "..."} with your '
+                                         "best answer to the user. Do not "
+                                         "call any more tools.")})
         emit({"type": "thinking"})
         parts: list[str] = []
         emit_mode: bool | None = None
@@ -160,6 +211,67 @@ def handle_turn(
                     emit_mode = not first.startswith(("{", "```"))
                 if emit_mode:
                     emit({"type": "delta", "text": delta})
+        except llm.LLMStreamStalled as stalled:
+            # winning route died mid-generation: reset UI, show a heartbeat,
+            # and keep trying fresh route pairs; final fallback = one-shot
+            # completion (cannot die mid-sentence).
+            emit({"type": "reset"})
+            emit({"type": "progress", "text": "switching routes..."})
+            parts = []
+            emit_mode = None
+            answer = ""
+            recovered = False
+            for attempt in range(2):
+                remaining = TURN_BUDGET - (time.time() - t0)
+                if remaining <= 3:
+                    break
+                parts = []
+                emit_mode = None
+                try:
+                    for delta in llm.chat_stream(messages, temperature=0.4,
+                                                 timeout=max(10, int(remaining))):
+                        if check_cancel():
+                            raise TurnCancelled()
+                        parts.append(delta)
+                        if emit_mode is None:
+                            first = "".join(parts).lstrip()
+                            if not first:
+                                continue
+                            emit_mode = not first.startswith(("{", "```"))
+                        if emit_mode:
+                            emit({"type": "delta", "text": delta})
+                except llm.LLMStreamStalled:
+                    emit({"type": "reset"})
+                    emit({"type": "progress",
+                          "text": "still switching routes..."})
+                    continue
+                except llm.LLMUnavailable:
+                    continue
+                raw = "".join(parts).strip()
+                call = parse_tool_call(raw)
+                if call and "say" in call:
+                    answer = sanitize_final(str(call.get("say", "")))
+                elif call and "tool" in call:
+                    r2 = tools.call(str(call["tool"]), call.get("args") or {})
+                    answer = sanitize_final(r2.get("speech", ""))
+                else:
+                    answer = sanitize_final(raw)
+                recovered = True
+                break
+            if not recovered:
+                # last resort: one-shot completion - cannot die mid-stream
+                remaining = TURN_BUDGET - (time.time() - t0)
+                try:
+                    answer = sanitize_final(
+                        llm.chat(messages, temperature=0.4,
+                                 timeout=max(8, min(45, int(remaining)))))
+                except Exception as exc2:
+                    reply = (f"My language core dropped mid-reply "
+                             f"({str(exc2)[:80]}). Try again?")
+                    emit({"type": "error", "text": reply})
+                    emit({"type": "done", "text": reply})
+                    return reply
+            break
         except llm.LLMUnavailable as exc:
             reply = f"My language core is unreachable right now ({str(exc)[:100]})."
             emit({"type": "error", "text": reply})
