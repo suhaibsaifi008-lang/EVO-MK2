@@ -166,24 +166,32 @@ def _mci_play(path: Path, stop: threading.Event, alias: str) -> bool:
     winmm.mciSendStringW(f"close {alias}", None, 0, 0)
     return True
 
-
 class Speaker:
     def __init__(self) -> None:
         self.stop_evt = threading.Event()
         self._thread: threading.Thread | None = None
         self._n = 0
+        self._active = False          # True from say() until playback ends
 
     def say(self, text: str) -> threading.Event:
         """Speak text; returns the stop Event (set it to cut speech)."""
         self.stop_evt.clear()
+        self._active = True
         self._thread = threading.Thread(
-            target=self._speak, args=(text, self.stop_evt), daemon=True, name="mk2-tts"
+            target=self._speak, args=(text, self.stop_evt), daemon=True,
+            name="mk2-tts"
         )
         self._thread.start()
         return self.stop_evt
 
     def shut_up(self) -> None:
         self.stop_evt.set()
+
+    @property
+    def is_speaking(self) -> bool:
+        if self._active and self.stop_evt.is_set():
+            return False              # interrupted
+        return self._active
 
     def _speak(self, text: str, stop: threading.Event) -> None:
         text = sanitize_speech(" ".join((text or "").split())[:600])
