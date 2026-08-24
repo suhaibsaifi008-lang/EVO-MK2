@@ -6,14 +6,14 @@ import threading
 from . import tts as _tts
 
 
-def synthesize_best(text: str):
+def synthesize_best(text: str, force_engine: str | None = None):
+    """force_engine='sapi' -> local Windows voice only (per-request escape
+    hatch used by the API when neural throttles)."""
     text = " ".join((text or "").split())[:600]
     mode = os.environ.get("EVO_TTS_ENGINE", "auto").lower()
 
-    if mode == "sapi":
-        p = _tts._sapi_wav(text)
-        if p:
-            return p
+    if mode == "sapi" or force_engine == "sapi":
+        return _tts._sapi_wav(text)
 
     # neural first: natural voice, ~1-2s synth (cached by content hash)
     try:
@@ -24,8 +24,5 @@ def synthesize_best(text: str):
         pass
 
     # offline / edge-tts down fallback
-    if mode != "neural":
-        p = _tts._sapi_wav(text)
-        if p:
-            return p
-    return None
+    p = _tts._sapi_wav(text)
+    return p

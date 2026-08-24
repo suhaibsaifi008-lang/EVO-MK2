@@ -107,8 +107,23 @@ function ttsFetchBlob(part) {
   const key = part.slice(0, 400);
   if (!tts.cache.has(key)) {
     if (tts.cache.size > 50) tts.cache.clear();
-    tts.cache.set(key, fetch(`/api/tts?text=${encodeURIComponent(key)}`)
-      .then(r => r.ok ? r.blob() : null).catch(() => null));
+    tts.cache.set(key, (async () => {
+      // 3 attempts against neural; final attempt forces the local SAPI
+      // engine server-side so a chunk can never silently vanish.
+      for (let a = 0; a < 3; a++) {
+        try {
+          const url = `/api/tts?text=${encodeURIComponent(key)}`
+            + (a === 2 ? "&engine=sapi" : "");
+          const r = await fetch(url);
+          if (r.ok) {
+            const b = await r.blob();
+            if (b && b.size > 512) return b;
+          }
+        } catch (e) { /* retry */ }
+        await new Promise(res => setTimeout(res, 300 * (a + 1)));
+      }
+      return null;
+    })());
   }
   return tts.cache.get(key);
 }

@@ -144,15 +144,18 @@ async def chat_stream(body: ChatIn, request=None):
 
 
 @app.get("/api/tts")
-def tts(text: str):
-    """Hybrid voice: instant cached SAPI for short lines, neural for long."""
-    from fastapi import HTTPException
+def tts(text: str, engine: str = ""):
+    """Neural voice by default; engine=sapi forces the local Windows voice."""
     from fastapi.responses import Response
 
     from .voice import tts_best
 
     try:
-        path = tts_best.synthesize_best(" ".join((text or "").split())[:600])
+        path = tts_best.synthesize_best(
+            " ".join((text or "").split())[:600],
+            force_engine=engine or None)
+        if path is None:
+            raise RuntimeError("synthesis failed")
         data = path.read_bytes()
         media = "audio/wav" if path.suffix == ".wav" else "audio/mpeg"
         return Response(content=data, media_type=media,

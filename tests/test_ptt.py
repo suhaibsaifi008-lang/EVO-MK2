@@ -50,7 +50,7 @@ class TestPTT:
         from mk2.voice import tts_best as t
         fake = tmp_path / "a.wav"
         fake.write_bytes(b"RIFFxxxxWAVEfmt " + b"\x00" * 64)
-        monkeypatch.setattr(t, "synthesize_best", lambda text: fake)
+        monkeypatch.setattr(t, "synthesize_best", lambda text, **k: fake)
         r = client.get("/api/tts", params={"text": "hello"})
         assert r.status_code == 200
         assert "audio/wav" in r.headers["content-type"]
