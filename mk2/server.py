@@ -164,6 +164,34 @@ def tts(text: str, engine: str = ""):
         raise HTTPException(status_code=502, detail=f"tts unavailable: {exc}")
 
 
+class ConvoIn(BaseModel):
+    on: bool
+
+
+@app.post("/api/voice/convo")
+def voice_convo_toggle(body: ConvoIn):
+    """Always-on conversation mode: open mic until switched off."""
+    from fastapi import HTTPException
+
+    from .voice import convo
+
+    if body.on:
+        started = convo.start()
+        if not started and not convo.convo_mode.running:
+            raise HTTPException(status_code=503,
+                                detail="mic unavailable or no STT model")
+        return {"ok": True, "running": True}
+    convo.stop()
+    return {"ok": True, "running": False}
+
+
+@app.get("/api/voice/convo")
+def voice_convo_status():
+    from .voice import convo
+
+    return {"running": convo.status()["running"]}
+
+
 @app.post("/api/transcribe")
 async def transcribe(request: Request) -> dict:
     data = await request.body()

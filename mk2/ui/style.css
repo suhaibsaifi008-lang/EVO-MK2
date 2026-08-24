@@ -82,3 +82,7 @@ body{font-family:"Segoe UI Variable Text","Segoe UI",-apple-system,sans-serif;fo
   border-radius: 8px; padding: 5px 12px; font-size: 12px; cursor: pointer;
 }
 .new-chat-btn:hover { background: var(--panel2); }
+
+/* conversation mode button */
+.icon-btn.convo.on { color:#8affa9; border-color:#8affa9; box-shadow:0 0 14px rgba(138,255,169,.45); animation:pulse 1.6s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.55} }

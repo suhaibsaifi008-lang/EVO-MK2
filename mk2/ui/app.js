@@ -334,6 +334,32 @@ $("chatInput").addEventListener("input", function () { this.style.height = "auto
    Receives proactive events from the server: reminders firing,
    research completing, watcher alerts, etc. Without this, all
    those things happen server-side and are INVISIBLE to you. */
+/* Always-on conversation mode: mic stays open, replies are spoken. */
+let convoOn = false;
+$("convoBtn").addEventListener("click", async () => {
+  const want = !convoOn;
+  try {
+    if (want) ttsCancel();                       // free the audio floor
+    const r = await fetch("/api/voice/convo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ on: want })
+    });
+    const j = await r.json();
+    convoOn = !!j.running;
+    $("convoBtn").classList.toggle("on", convoOn);
+    toast(convoOn ? "🎙 Conversation mode on — just talk."
+                  : "Conversation mode closed.");
+  } catch { toast("Could not toggle conversation mode."); }
+});
+setInterval(async () => {
+  try {
+    const s = await (await fetch("/api/voice/convo")).json();
+    convoOn = !!s.running;
+    $("convoBtn").classList.toggle("on", convoOn);
+  } catch {}
+}, 5000);
+
 const es = new EventSource("/api/events");
 const _lastProg = {};
 es.onmessage = (m) => {
@@ -355,6 +381,11 @@ es.onmessage = (m) => {
         _lastProg[id] = now;
         toast(`⚙ Mission #${id} · step ${step}/${max_steps}: ${goal}`);
       }
+    }
+    if (ev.type === "convo.turn") {
+      const u = ev.payload?.text || "", r = ev.payload?.reply || "";
+      if (u) addMsg(u, "user");
+      if (r) addMsg(r, "evo", { highlight: false });
     }
     if (ev.type === "system.voice") {
       faceState(ev.payload?.state === "session" ? "listening" : "idle");

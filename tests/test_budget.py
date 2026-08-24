@@ -31,9 +31,12 @@ class TestFinalStepNudge:
             return iter(['{"tool":"web_search","args":{"query":"loop"}}'])
 
         monkeypatch.setattr(brain.llm, "chat_stream", spy_stream)
+        # hermetic rescue: post-loop one-shot must not hit the network
+        monkeypatch.setattr(brain.llm, "chat",
+                            lambda msgs, **k: "RESCUED ANSWER")
         r = brain.handle_turn("loop please")
         assert any("FINAL STEP" in s for s in seen_last_system)
-        assert "stopped safely" in r.lower()
+        assert "RESCUED ANSWER" in r or "pool is unstable" in r.lower()
 
     def test_nudge_absent_on_early_steps(self, monkeypatch, tmp_path):
         from mk2 import brain

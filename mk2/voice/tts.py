@@ -2,6 +2,7 @@
 import asyncio
 import hashlib
 import os
+import re
 import subprocess
 import threading
 import time
@@ -24,12 +25,47 @@ CURATED_VOICES = [
     "en-US-AriaNeural",
 ]
 
+_MD_STRIP = [
+    (re.compile(r"\*\*\*(.+?)\*\*\*", re.S), r"\1"),
+    (re.compile(r"\*\*(.+?)\*\*", re.S), r"\1"),
+    (re.compile(r"\*(.+?)\*", re.S), r"\1"),
+    (re.compile(r"__(.+?)__", re.S), r"\1"),
+    (re.compile(r"(?<![a-zA-Z0-9])_(.+?)_(?![a-zA-Z0-9])", re.S), r"\1"),
+    (re.compile(r"`+"), ""),
+    (re.compile(r"^#{1,6}\s*", re.M), ""),
+]
+
+
+def sanitize_speech(text: str) -> str:
+    """Strip markdown emphasis/markup so TTS never says 'asterisk'."""
+    t = str(text or "")
+    for pat, rep in _MD_STRIP:
+        t = pat.sub(rep, t)
+    return re.sub(r"[ \t]{2,}", " ", t).replace("\n\n\n", "\n\n").strip()
+
 
 def _edge_voice() -> str:
     import os
 
     return (os.environ.get("EVO_TTS_VOICE", "").strip()
             or "en-US-AndrewMultilingualNeural")
+
+
+def _edge_rate() -> str:
+    """Speech rate for edge-tts, e.g. '+25%'. Env: EVO_TTS_RATE."""
+    import os
+
+    return os.environ.get("EVO_TTS_RATE", "+25%").strip()
+
+
+def _sapi_rate() -> int:
+    """SAPI rate 0-10 (~default 3 == +25% vs normal). Env: EVO_SAPI_RATE."""
+    import os
+
+    try:
+        return max(-5, min(10, int(os.environ.get("EVO_SAPI_RATE", "3"))))
+    except ValueError:
+        return 3
 
 
 def _sapi_voice_clause() -> str:
@@ -56,6 +92,7 @@ def _sapi_voice_clause() -> str:
 
 
 def _sapi_wav(text: str) -> Path | None:
+    text = sanitize_speech(text)
     key = hashlib.sha1(("sapi|" + os.environ.get("EVO_SAPI_VOICE", "") +
                         "|" + text).encode()).hexdigest()[:20] + ".wav"
     out = TTS_DIR / key
@@ -66,6 +103,7 @@ def _sapi_wav(text: str) -> Path | None:
     ps = (
         "Add-Type -AssemblyName System.Speech;"
         "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer;"
+        "$s.Rate = " + str(_sapi_rate()) + ";"
         + _sapi_voice_clause() +
         f"$s.SetOutputToWaveFile('{tmp}');"
         f"$s.Speak('{safe}');"
@@ -84,17 +122,21 @@ def _sapi_wav(text: str) -> Path | None:
 
 
 def _edge_mp3(text: str, stop: threading.Event) -> Path | None:
+    text = sanitize_speech(text)
     try:
         import edge_tts
 
-        key = hashlib.sha1(("edge|" + text).encode()).hexdigest()[:20] + ".mp3"
+        key = hashlib.sha1(("edge|" + _edge_voice() + "|" +
+                            _edge_rate() + "|" + text).encode()
+                           ).hexdigest()[:20] + ".mp3"
         out = TTS_DIR / key
         if out.exists() and out.stat().st_size > 512:
             return out
         tmp = out.with_suffix(".part")
 
         async def gen():
-            com = edge_tts.Communicate(text[:800], _edge_voice())
+            com = edge_tts.Communicate(text[:800], _edge_voice(),
+                                       rate=_edge_rate())
             await asyncio.wait_for(com.save(str(tmp)), timeout=25)
 
         asyncio.run(gen())
@@ -144,7 +186,7 @@ class Speaker:
         self.stop_evt.set()
 
     def _speak(self, text: str, stop: threading.Event) -> None:
-        text = " ".join((text or "").split())[:600]
+        text = sanitize_speech(" ".join((text or "").split())[:600])
         if not text or stop.is_set():
             return
         self._n += 1

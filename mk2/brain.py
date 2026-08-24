@@ -278,6 +278,14 @@ def handle_turn(
             emit({"type": "done", "text": reply})
             return reply
         raw = "".join(parts).strip()
+        if not raw:
+            # upstream returned an EMPTY response (dead route): tell the
+            # model to actually answer and try again — never break silently
+            messages.append({"role": "system",
+                             "content": ("Your previous response was EMPTY. "
+                                         "Reply now: either a tool call or "
+                                         '{"say": "..."} — never nothing.')})
+            continue
         call = parse_tool_call(raw)
         if call and "tool" in call:
             name = str(call.get("tool", "")).strip()
@@ -339,7 +347,13 @@ def handle_turn(
         break
 
     if not answer:
-        answer = "That needed more steps than I'm allowed - I stopped safely."
+        # last-chance rescue: one non-streaming attempt on the best route
+        try:
+            answer = sanitize_final(
+                llm.chat(messages, temperature=0.4, timeout=25))
+        except Exception:
+            answer = ("The language pool is unstable right now and I couldn't "
+                      "finish that reply. Give me a moment and try again.")
 
     memory.record_turn(text, answer, surface)
     emit({"type": "done", "text": answer})

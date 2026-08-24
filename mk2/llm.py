@@ -456,6 +456,8 @@ def _race_stream(pairs, messages: list[dict], temperature: float,
                         penalize_stall(pm[0]["name"], pm[1])
                 return
             if winner is None and now >= deadline_first:
+                if info is not None:
+                    info["no_token"] = True   # caller must NOT treat as done
                 return            # nobody spoke in time -> caller falls back
             if winner is None:
                 wait = max(0.05, min(1.0, deadline_first - now))
@@ -490,6 +492,8 @@ def _race_stream(pairs, messages: list[dict], temperature: float,
                         info["stalled"] = True
                     return          # partial already delivered; don't hang
                 if winner is None and len(finished) >= len(pairs):
+                    if info is not None:
+                        info["no_token"] = True   # ladder must take over
                     return          # every racer died pre-token
     finally:
         stop.set()
@@ -510,12 +514,15 @@ def chat_stream(messages: list[dict], temperature: float = 0.6, model: str = "",
             for delta in _race_stream(pairs, messages, temperature, info=info):
                 buf.append(delta)
                 yield delta
-            if not info.get("stalled"):
+            if info.get("no_token"):
+                pass                       # nobody spoke -> ladder takes over
+            elif not info.get("stalled"):
                 return
-            # winner stalled mid-generation: raise so the caller can reset
-            # and retry on fresh routes (brain handles this automatically).
-            _penalize(pairs[0][0]["name"], pairs[0][1], "stalled", hard=True)
-            raise LLMStreamStalled(partial="".join(buf))
+            else:
+                # winner stalled mid-generation: caller resets + retries
+                _penalize(pairs[0][0]["name"], pairs[0][1], "stalled",
+                          hard=True)
+                raise LLMStreamStalled(partial="".join(buf))
 
     for idx, (prov, m) in enumerate(attempts):
         try:
