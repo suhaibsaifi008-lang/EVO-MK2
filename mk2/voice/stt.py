@@ -175,8 +175,11 @@ def _transcribe_whisper(pcm: bytes) -> str:
 
     audio = np.frombuffer(pcm, dtype=np.int16).astype("float32") / 32768.0
     model = _whisper_model()
+    # beam_size=1 (greedy): ~3x faster on CPU than beam 5 with negligible
+    # accuracy loss for short commands. Override via EVO_WHISPER_BEAM.
+    beam = int(os.environ.get("EVO_WHISPER_BEAM", "1"))
     segments, _info = model.transcribe(
-        audio, language="en", beam_size=5, temperature=0.0,
+        audio, language="en", beam_size=max(1, beam), temperature=0.0,
         condition_on_previous_text=False)
     return " ".join(s.text.strip() for s in segments).strip()
 

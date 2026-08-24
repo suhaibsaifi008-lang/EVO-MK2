@@ -79,11 +79,20 @@ function addMsg(text, who, opts) {
 }
 function setBody(el, text, who) { el.dataset.raw = text; el.innerHTML = who === "evo" ? mdLite(text) : esc(text); }
 
-/* speech: sentence-chained so long replies are never cut off midway */
-let speakToken = 0;
-function speakText(text) {
-  const myToken = ++speakToken;
-  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+/* speech engine: sentence-level queue w/ prefetch.
+   - speakBegin()   start a fresh speech session (cancels previous)
+   - speakFeed(s)   append streamed text; complete sentences get queued
+   - speakFlush()   queue whatever tail remains (end of reply)
+   - speakAll(text) convenience: begin + enqueue whole text
+   Chunks prefetch in parallel so there is zero dead air between them. */
+const tts = {
+  token: 0,
+  q: [],
+  buf: "",
+  busy: false,
+  cache: new Map(),
+};
+function ttsSplit(text) {
   const sentences = String(text || "").split(/(?<=[.!?])\s+/).filter(s => s.trim());
   const parts = [];
   let buf = "";
@@ -92,25 +101,69 @@ function speakText(text) {
     else buf = (buf ? buf + " " : "") + s;
   }
   if (buf.trim()) parts.push(buf.trim());
-  if (!parts.length) { faceState("idle"); return; }
+  return parts;
+}
+function ttsFetchBlob(part) {
+  const key = part.slice(0, 400);
+  if (!tts.cache.has(key)) {
+    if (tts.cache.size > 50) tts.cache.clear();
+    tts.cache.set(key, fetch(`/api/tts?text=${encodeURIComponent(key)}`)
+      .then(r => r.ok ? r.blob() : null).catch(() => null));
+  }
+  return tts.cache.get(key);
+}
+function ttsEnqueue(parts) {
+  tts.q.push(...parts);
+  ttsPump();
+}
+function ttsPump() {
+  if (tts.busy) return;
+  const part = tts.q.shift();
+  if (!part) { if (!currentAudio) faceState("idle"); return; }
+  tts.busy = true;
   faceState("speaking");
-  const playNext = () => {
-    if (myToken !== speakToken) return;              // superseded
-    if (i >= parts.length) { faceState("idle"); return; }
-    fetch(`/api/tts?text=${encodeURIComponent(parts[i].slice(0, 400))}`)
-      .then(r => r.ok ? r.blob() : null)
-      .then(b => {
-        if (myToken !== speakToken) return;
-        if (!b) { i++; playNext(); return; }
-        const a = new Audio(URL.createObjectURL(b));
-        currentAudio = a;
-        a.onended = () => { i++; playNext(); };
-        a.play().catch(() => { i++; playNext(); });
-      })
-      .catch(() => { i++; playNext(); });
-  };
-  let i = 0;
-  playNext();
+  if (tts.q[0]) ttsFetchBlob(tts.q[0]);        // prefetch next chunk
+  const myToken = tts.token;
+  ttsFetchBlob(part).then(blob => {
+    if (myToken !== tts.token) return;
+    if (!blob) { tts.busy = false; return ttsPump(); }
+    const a = new Audio(URL.createObjectURL(blob));
+    currentAudio = a;
+    a.onended = () => { tts.busy = false; ttsPump(); };
+    a.onerror = () => { tts.busy = false; ttsPump(); };
+    a.play().catch(() => { tts.busy = false; ttsPump(); });
+  }).catch(() => { tts.busy = false; ttsPump(); });
+}
+function ttsCancel() {
+  tts.token++;
+  tts.q = []; tts.buf = ""; tts.busy = false;
+  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+}
+function ttsBegin() {
+  tts.token++;                       // invalidate any in-flight chain
+  tts.q = []; tts.buf = ""; tts.busy = false;
+  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+}
+function ttsFeed(deltaText) {
+  if (!$("voiceOut").checked) return;
+  tts.buf += deltaText;
+  let m;
+  while ((m = tts.buf.match(/^[^.!?]*[.!?](\s+|$)/))) {
+    const sent = tts.buf.slice(0, m[0].length).trim();
+    tts.buf = tts.buf.slice(m[0].length);
+    if (sent) ttsEnqueue([sent]);
+  }
+}
+function ttsFlush() {
+  if ($("voiceOut").checked && tts.buf.trim()) {
+    ttsEnqueue(ttsSplit(tts.buf));
+  }
+  tts.buf = "";
+}
+function speakAll(text) {
+  ttsBegin();
+  if ($("voiceOut").checked) ttsEnqueue(ttsSplit(text));
+  else faceState("idle");
 }
 
 async function sendStreaming(text) {
@@ -121,6 +174,7 @@ async function sendStreaming(text) {
   body.innerHTML = '<span class="typing"><i></i><i></i><i></i></span>';
   let acc = "", done = false;
   currentController = new AbortController();
+  ttsBegin();                                    // cancel any speech chain
   const sb = $("stopBtn"); sb.classList.remove("hidden");
   try {
     const res = await fetch("/api/chat/stream", { method: "POST",
@@ -138,15 +192,20 @@ async function sendStreaming(text) {
         else if (ev.type === "reset") { acc = ""; body.innerHTML = '<span class="typing"><i></i><i></i><i></i></span>'; }
         else if (ev.type === "progress") { const c = document.createElement("div"); c.className = "tool-chip"; c.innerHTML = `<b>⚙</b><i>${esc(ev.text)}</i>`; bubble.insertBefore(c, body); }
         else if (ev.type === "tool") { const c = document.createElement("div"); c.className = "tool-chip"; c.innerHTML = `<b>⚙ ${esc(ev.name)}</b><i>${esc(ev.brief)}</i>`; bubble.insertBefore(c, body); }
-        else if (ev.type === "delta") { acc += ev.text; setBody(body, acc, "evo"); scrollArea.scrollTop = scrollArea.scrollHeight; }
+        else if (ev.type === "delta") {
+          acc += ev.text; setBody(body, acc, "evo");
+          if ($("voiceOut").checked) ttsFeed(ev.text);   // speak sentences as they complete
+          scrollArea.scrollTop = scrollArea.scrollHeight;
+        }
         else if (ev.type === "done") { done = true; acc = ev.text || acc; setBody(body, acc, "evo"); }
         else if (ev.type === "error" && ev.text !== "cancelled") toast(ev.text);
       }
     }
     if (!done) setBody(body, acc || "(no response)", "evo");
-    // TTS — sentence-chained, full reply
+    // TTS — flush the unspoken tail (sentences already queued live)
     if ($("voiceOut").checked && acc) {
-      speakText(acc);
+      ttsFlush();
+      if (!tts.q.length && !tts.busy && !currentAudio) faceState("idle");
     } else faceState("idle");
   } catch (e) {
     if (!done && !acc) setBody(body, "Connection lost.", "evo");
@@ -173,6 +232,7 @@ async function pttStart() {
   try { mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } }); }
   catch { toast("Microphone blocked."); return; }
   pttRecording = true; speechSeen = false; quietFrames = 0; collected = [];
+  ttsCancel();                                   // stop speech, free the floor
   try { audioCtx = new AudioContext({ sampleRate: PTT_RATE }); } catch { audioCtx = new AudioContext(); }
   sourceNode = audioCtx.createMediaStreamSource(mediaStream);
   processor = audioCtx.createScriptProcessor(2048, 1, 1);
@@ -271,7 +331,7 @@ es.onmessage = (m) => {
       addMsg(text, "evo", { highlight: true });
       toast(text);
       // Speak it aloud too — sentence-chained
-      speakText(text.slice(0, 600));
+      speakAll(text.slice(0, 1200));
     }
     if (ev.type === "job.progress") {
       const { id, goal, step, max_steps } = ev.payload || {};
