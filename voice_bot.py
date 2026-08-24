@@ -84,7 +84,9 @@ async def run_bot(transport: SmallWebRTCTransport,
     llm = OpenAILLMService(
         api_key=evo_settings.openai_key,
         base_url=evo_settings.openai_base,
-        model=evo_settings.openai_model or "gpt-oss-120b",
+        # voice needs SPEED over depth: qwen3.6-27b measured fastest stable
+        # TTFT across the FreeLLMAPI ladder (groq upstream, speed 99).
+        model=os.environ.get("EVO_VOICE_LLM_MODEL", "qwen3.6-27b"),
         params=None,
         system_instruction=_system_instruction(),
     )
