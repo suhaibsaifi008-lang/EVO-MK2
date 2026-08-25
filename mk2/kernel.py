@@ -269,18 +269,22 @@ def main(voice: bool = True) -> None:
         log.info("wake-word idle (EVO_WAKE=0). Push-to-talk + /api/tts remain active.")
 
     # Keep the local model resident: otherwise Ollama unloads after ~5 min
-    # idle and EVERY reply pays a 15s+ reload tax.
+    # idle and EVERY reply pays a 15s+ reload tax. Also keeps FreeLLMAPI
+    # routes' measured-TTFT cache fresh so voice never rides a cold route.
     if os.environ.get("EVO_MODEL_WARMER", "1") == "1":
+        warmer_state = {"n": 0}
 
         async def _warmer() -> None:
             while True:
                 try:
+                    role = "fast" if warmer_state["n"] % 2 == 0 else "primary"
                     llm.chat([{"role": "user", "content": "ping"}],
-                             role="fast", temperature=0, timeout=10,
+                             role=role, temperature=0, timeout=10,
                              bias=False, max_providers=1)
+                    warmer_state["n"] += 1
                 except Exception:
                     pass
-                await asyncio.sleep(240)
+                await asyncio.sleep(150)
 
         _supervise("model-warmer", _warmer)
 

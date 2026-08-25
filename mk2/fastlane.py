@@ -25,8 +25,11 @@ def _normalize(text: str) -> str:
 
 def _split_compound(t: str) -> list[str]:
     """Split 'open youtube and play lofi' into two commands when BOTH sides
-    are actionable. Single-intent sentences pass through untouched."""
-    parts = re.split(r"\s+and\s+|\s+then\s+|\s*;\s*", t)
+    are actionable. Single-intent sentences pass through untouched.
+    'an' / 'in' are common STT mis-hearings of 'and' - treated as
+    conjunction CANDIDATES, but only accepted when both sides are
+    actionable clauses, so 'open an app' never splits."""
+    parts = re.split(r"\s+(?:and|an|then)\s+|\s*;\s*", t)
     if len(parts) < 2:
         return [t]
     actionable = [p for p in parts if _ACTION_RE.search(p)]
@@ -93,6 +96,12 @@ def _single(t: str, surface: str = "console") -> str | None:
         import webbrowser
 
         q = m.group(1).strip()
+        # natural-language padding -> clean search keywords
+        q = re.sub(r"^the best .{0,24}?(?:video|videos|clip)s? "
+                   r"(?:of|about|on|for) ", "", q)
+        q = re.sub(r"\s+(?:that |which )?you can find\b", " ", q)
+        q = re.sub(r"\s+(?:that |which )?you (?:like|know) of\b", " ", q)
+        q = re.sub(r"\s+", " ", q).strip(" ,.")
         # vague asks after YouTube was opened = just go to YouTube
         if q.lower() in ("the first video", "first video", "a video",
                           "something", "anything", "videos"):
@@ -139,8 +148,15 @@ def _single(t: str, surface: str = "console") -> str | None:
     if m:
         target = m.group(1).strip()
 
-        # Special case: "open youtube and ..." was already split above, so a
-        # bare open here is single-intent.
+        # Guard: long tails are SENTENCES ("open youtube and play X" that
+        # survived splitting), not app names. App/site names are short.
+        words = target.split()
+        verb_hits = sum(1 for w in words if re.fullmatch(
+            r"(?:play|search|find|show|look|give|tell|open|start|put|get)\b.*",
+            w))
+        if len(words) > 4 or (len(words) > 2 and verb_hits >= 1):
+            return None
+
         r = tools.call("open_app", {"target": target})
         return r["speech"]
 

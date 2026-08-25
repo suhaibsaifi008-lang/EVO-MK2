@@ -373,33 +373,102 @@ $("chatInput").addEventListener("input", function () { this.style.height = "auto
    Receives proactive events from the server: reminders firing,
    research completing, watcher alerts, etc. Without this, all
    those things happen server-side and are INVISIBLE to you. */
-/* Always-on conversation mode (local Vosk loop): mic stays open, replies
-   are spoken through the same Piper-first TTS. The Web Speech PTT above is
-   the primary voice input; this toggle is for hands-free at the desk. */
-let convoOn = false;
-$("convoBtn").addEventListener("click", async () => {
-  const want = !convoOn;
+/* Hands-free live mic: browser-native CONTINUOUS recognition — the same
+   accurate engine as PTT, no local Vosk. Every finished phrase becomes a
+   turn; interim words stream into the preview line. Falls back to the old
+   local Vosk loop only when SpeechRecognition is unavailable/offline. */
+let micOn = false;
+let handsFree = null;
+
+function hfStop() {
+  micOn = false;
+  try { handsFree && handsFree.abort(); } catch {}
+  handsFree = null;
+  $("convoBtn").classList.remove("on");
+  $("sttPreview").textContent = "";
+  faceState("idle");
+}
+
+async function startLocalConvoFallback() {     // legacy Vosk loop (no SR)
   try {
-    if (want) aqCancel();
     const r = await fetch("/api/voice/convo", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ on: want })
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ on: true })
     });
     const j = await r.json();
-    convoOn = !!j.running;
-    $("convoBtn").classList.toggle("on", convoOn);
-    toast(convoOn ? "Conversation mode on — just talk."
-                  : "Conversation mode closed.");
+    micOn = !!j.running;
+    $("convoBtn").classList.toggle("on", micOn);
+    toast(micOn ? "Live mic on (local engine) — just talk."
+                : "Could not open the mic.");
   } catch { toast("Could not toggle conversation mode."); }
+}
+
+function hfStart() {
+  handsFree = new SRClass();
+  handsFree.continuous = true;
+  handsFree.interimResults = true;
+  handsFree.lang = "en-US";
+  handsFree.onresult = e => {
+    let interim = "";
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const r = e.results[i];
+      if (r.isFinal) {
+        const t = r[0].transcript.trim();
+        if (!t) continue;
+        if (currentController) {              // reply still streaming
+          $("sttPreview").textContent = "(still answering) " + t;
+          continue;
+        }
+        sendStreaming(t);                     // phrase complete -> turn
+      } else interim += r[0].transcript;
+    }
+    if (interim) $("sttPreview").textContent = "… " + interim;
+  };
+  handsFree.onend = () => {                   // Chrome pauses periodically
+    if (micOn) { try { handsFree.start(); } catch {} }
+  };
+  handsFree.onerror = ev => {
+    if (ev.error === "not-allowed" || ev.error === "service-not-allowed") {
+      toast("Microphone/speech blocked.");
+      hfStop();
+      return;
+    }
+    if (!micOn || !handsFree) return;
+    if (ev.error === "network" || ev.error === "audio-capture") {
+      toast("Speech service unreachable — switching to the local engine.");
+      const keepMic = micOn;
+      hfStop();
+      if (keepMic) startLocalConvoFallback();
+    }
+    // 'no-speech' etc: ignore, continuous session keeps going
+  };
+  try { handsFree.start(); } catch {}
+}
+
+$("convoBtn").addEventListener("click", async () => {
+  if (micOn) {
+    if (handsFree) hfStop();
+    else {
+      try { await fetch("/api/voice/convo", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ on: false }) }); } catch {}
+      micOn = false;
+      $("convoBtn").classList.remove("on");
+    }
+    toast("Live mic closed.");
+    return;
+  }
+  aqCancel();
+  if (SRClass) {
+    micOn = true;
+    $("convoBtn").classList.add("on");
+    $("sttPreview").textContent = "Listening… just talk.";
+    toast("Live mic open — speak naturally.");
+    hfStart();
+  } else {
+    await startLocalConvoFallback();
+  }
 });
-setInterval(async () => {
-  try {
-    const s = await (await fetch("/api/voice/convo")).json();
-    convoOn = !!s.running;
-    $("convoBtn").classList.toggle("on", convoOn);
-  } catch {}
-}, 5000);
 
 const es = new EventSource("/api/events");
 const _lastProg = {};
