@@ -16,8 +16,19 @@ copy .env.example .env   # add your keys
 python run.py            # console at http://127.0.0.1:8421
 ```
 
-Voice: say **"wake up evo"** â†’ duplex session opens (Gemini Live if `GEMINI_API_KEY`
-is set; otherwise fully offline Vosk). Interrupt it anytime. "goodbye" ends the session.
+Voice, three ways (all in one `python run.py`):
+
+1. **Voice v2 (recommended)** - console topbar **Voice** button or
+   <http://127.0.0.1:8421/voice/client/> -> Connect -> just talk.
+   WebRTC duplex: Silero VAD endpointing (~0.3-0.5s), local faster-whisper,
+   FreeLLMAPI fastest-stable route, Kokoro neural TTS. Barge-in works.
+   Every turn lands in MK2 memory + audit via the tools registry.
+2. Push-to-talk button in the composer (`/api/transcribe` + `/api/tts`).
+3. Legacy wake word: say **"wake up evo"** with `EVO_WAKE=1` (Gemini Live if
+   `GEMINI_API_KEY` is set; otherwise fully offline Vosk). "goodbye" ends it.
+
+Standalone dev-runner equivalent: `py -3 voice_bot.py --transport webrtc`
+(serves the same pipeline on :7860/client).
 
 ## Layout
 
@@ -35,6 +46,7 @@ is set; otherwise fully offline Vosk). Interrupt it anytime. "goodbye" ends the 
 | `mk2/mail_tools.py` | Phase 2: IMAP read + draft-first SMTP send (double-gated) |
 | `mk2/push_notify.py` | Phase 2: ntfy.sh push + notify.out bridge to the phone |
 | `mk2/voice/` | Gateway state machine, STT(+grammar rescue), TTS hybrid, Gemini Live |
+| mk2/voice/webrtc_v2.py | Voice v2: WebRTC pipeline embedded in the console server (memory + bus + audited tools) |
 
 ## Tests
 

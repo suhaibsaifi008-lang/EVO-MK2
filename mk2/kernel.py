@@ -70,11 +70,28 @@ def main(voice: bool = True) -> None:
     n_skills = skills.load_all()
     if n_skills:
         log.info("re-armed %d learned skill(s)", n_skills)
+    try:  # pre-load the local Piper JARVIS voice (first reply pays no load tax)
+        from .voice import tts as _tts
+
+        _tts.warm_piper()
+    except Exception:
+        pass
     _loop = asyncio.new_event_loop()
     asyncio.set_event_loop(_loop)
     bus.attach_loop(_loop)
 
     _supervise("server", _server_subsystem)
+
+    async def _voice_v2_bootline() -> None:
+        await asyncio.sleep(4)      # let the server app finish registering
+        try:
+            from .voice import webrtc_v2
+
+            log.info(webrtc_v2.boot_line())
+        except Exception:
+            pass
+
+    _supervise("voicev2log", _voice_v2_bootline)
 
     # Phase 2: communication surfaces -------------------------------------
     tg_stop = None
@@ -268,6 +285,12 @@ def main(voice: bool = True) -> None:
         _supervise("model-warmer", _warmer)
 
     log.info("EVO MK2 kernel online: http://%s:%d", settings.host, settings.port)
+    try:
+        from .voice import webrtc_v2
+
+        log.info(webrtc_v2.boot_line())
+    except Exception:
+        pass
     try:
         _loop.run_forever()
     except KeyboardInterrupt:

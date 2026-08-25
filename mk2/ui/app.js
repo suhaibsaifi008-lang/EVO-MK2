@@ -2,7 +2,7 @@
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
 const log = $("log"), scrollArea = $("scrollArea");
-let currentController = null, currentAudio = null;
+let currentController = null;
 
 function mdLite(src) {
   let out = "", inCode = false, buf = [];
@@ -79,19 +79,71 @@ function addMsg(text, who, opts) {
 }
 function setBody(el, text, who) { el.dataset.raw = text; el.innerHTML = who === "evo" ? mdLite(text) : esc(text); }
 
-/* speech engine: sentence-level queue w/ prefetch.
-   - speakBegin()   start a fresh speech session (cancels previous)
-   - speakFeed(s)   append streamed text; complete sentences get queued
-   - speakFlush()   queue whatever tail remains (end of reply)
-   - speakAll(text) convenience: begin + enqueue whole text
-   Chunks prefetch in parallel so there is zero dead air between them. */
-const tts = {
-  token: 0,
-  q: [],
-  buf: "",
-  busy: false,
-  cache: new Map(),
-};
+/* ============ VOICE PIPELINE v3 ============
+   ONE WebSocket (/ws/voice) carries the whole turn: user text up, streamed
+   reply text down, and - per completed sentence - a JSON audio header
+   followed by raw audio bytes. The server synthesizes sentence N+1 while
+   you are still listening to sentence N, so playback is gapless: every
+   blob is already in memory before the previous Audio ends. No /api/tts
+   round trips during replies; STT is browser-native (Web Speech API). */
+const typingHTML = () => '<span class="typing"><i></i><i></i><i></i></span>';
+
+/* gapless player */
+const aq = { items: [], cur: null };
+function aqPush(blob) {
+  const a = new Audio(URL.createObjectURL(blob));
+  aq.items.push(a);
+  aqPump();
+}
+function aqPump() {
+  if (aq.cur) return;
+  const a = aq.items.shift();
+  if (!a) { faceState("idle"); return; }
+  aq.cur = a;
+  faceState("speaking");
+  const fin = () => {
+    if (aq.cur === a) aq.cur = null;
+    try { URL.revokeObjectURL(a.src); } catch {}
+    if (!aq.cur && !aq.items.length) faceState("idle");
+    else aqPump();                      // next one is already buffered
+  };
+  a.onended = fin; a.onerror = fin;
+  a.play().catch(fin);
+}
+function aqCancel() {
+  aq.items.forEach(a => { a.pause(); try { URL.revokeObjectURL(a.src); } catch {} });
+  aq.items = [];
+  if (aq.cur) { aq.cur.pause(); aq.cur = null; }
+  faceState("idle");
+}
+
+/* transport */
+let turnHandler = null;                 // routes server events to active bubble
+const vws = { sock: null, queue: [] };
+function vwsConnect(onReady) {
+  if (vws.sock && vws.sock.readyState === WebSocket.OPEN) { if (onReady) onReady(); return; }
+  if (onReady) vws.queue.push(onReady);
+  if (vws.sock && vws.sock.readyState === WebSocket.CONNECTING) return;
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const s = new WebSocket(`${proto}://${location.host}/ws/voice`);
+  s.binaryType = "blob";
+  vws.sock = s;
+  s.onopen = () => vws.queue.splice(0).forEach(f => f());
+  s.onmessage = m => {
+    if (m.data instanceof Blob) { aqPush(m.data); return; }
+    let ev; try { ev = JSON.parse(m.data); } catch { return; }
+    if (turnHandler) turnHandler(ev);
+  };
+  s.onclose = () => { vws.sock = null; };
+  s.onerror = () => {};
+}
+function wsSend(obj) {
+  vwsConnect(() => { try { vws.sock.send(JSON.stringify(obj)); } catch {} });
+}
+function wsCancelTurn() {
+  try { if (vws.sock && vws.sock.readyState === WebSocket.OPEN) vws.sock.send('{"type":"cancel"}'); } catch {}
+}
+
 function ttsSplit(text) {
   const sentences = String(text || "").split(/(?<=[.!?])\s+/).filter(s => s.trim());
   const parts = [];
@@ -103,82 +155,9 @@ function ttsSplit(text) {
   if (buf.trim()) parts.push(buf.trim());
   return parts;
 }
-function ttsFetchBlob(part) {
-  const key = part.slice(0, 400);
-  if (!tts.cache.has(key)) {
-    if (tts.cache.size > 50) tts.cache.clear();
-    tts.cache.set(key, (async () => {
-      // 3 attempts against neural; final attempt forces the local SAPI
-      // engine server-side so a chunk can never silently vanish.
-      for (let a = 0; a < 3; a++) {
-        try {
-          const url = `/api/tts?text=${encodeURIComponent(key)}`
-            + (a === 2 ? "&engine=sapi" : "");
-          const r = await fetch(url);
-          if (r.ok) {
-            const b = await r.blob();
-            if (b && b.size > 512) return b;
-          }
-        } catch (e) { /* retry */ }
-        await new Promise(res => setTimeout(res, 300 * (a + 1)));
-      }
-      return null;
-    })());
-  }
-  return tts.cache.get(key);
-}
-function ttsEnqueue(parts) {
-  tts.q.push(...parts);
-  ttsPump();
-}
-function ttsPump() {
-  if (tts.busy) return;
-  const part = tts.q.shift();
-  if (!part) { if (!currentAudio) faceState("idle"); return; }
-  tts.busy = true;
-  faceState("speaking");
-  if (tts.q[0]) ttsFetchBlob(tts.q[0]);        // prefetch next chunk
-  const myToken = tts.token;
-  ttsFetchBlob(part).then(blob => {
-    if (myToken !== tts.token) return;
-    if (!blob) { tts.busy = false; return ttsPump(); }
-    const a = new Audio(URL.createObjectURL(blob));
-    currentAudio = a;
-    a.onended = () => { tts.busy = false; ttsPump(); };
-    a.onerror = () => { tts.busy = false; ttsPump(); };
-    a.play().catch(() => { tts.busy = false; ttsPump(); });
-  }).catch(() => { tts.busy = false; ttsPump(); });
-}
-function ttsCancel() {
-  tts.token++;
-  tts.q = []; tts.buf = ""; tts.busy = false;
-  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
-}
-function ttsBegin() {
-  tts.token++;                       // invalidate any in-flight chain
-  tts.q = []; tts.buf = ""; tts.busy = false;
-  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
-}
-function ttsFeed(deltaText) {
-  if (!$("voiceOut").checked) return;
-  tts.buf += deltaText;
-  let m;
-  while ((m = tts.buf.match(/^[^.!?]*[.!?](\s+|$)/))) {
-    const sent = tts.buf.slice(0, m[0].length).trim();
-    tts.buf = tts.buf.slice(m[0].length);
-    if (sent) ttsEnqueue([sent]);
-  }
-}
-function ttsFlush() {
-  if ($("voiceOut").checked && tts.buf.trim()) {
-    ttsEnqueue(ttsSplit(tts.buf));
-  }
-  tts.buf = "";
-}
-function speakAll(text) {
-  ttsBegin();
-  if ($("voiceOut").checked) ttsEnqueue(ttsSplit(text));
-  else faceState("idle");
+function speakAll(text) {                // proactive one-shots (notifications)
+  if (!$("voiceOut").checked) { faceState("idle"); return; }
+  ttsSplit(String(text || "").slice(0, 1200)).forEach(p => wsSend({ type: "tts", text: p }));
 }
 
 async function sendStreaming(text) {
@@ -186,48 +165,46 @@ async function sendStreaming(text) {
   addMsg(text, "user");
   const bubble = addMsg("", "evo"); bubble.classList.add("streaming");
   const body = bubble.querySelector(".msg-body");
-  body.innerHTML = '<span class="typing"><i></i><i></i><i></i></span>';
-  let acc = "", done = false;
-  currentController = new AbortController();
-  ttsBegin();                                    // cancel any speech chain
+  body.innerHTML = typingHTML();
   const sb = $("stopBtn"); sb.classList.remove("hidden");
-  try {
-    const res = await fetch("/api/chat/stream", { method: "POST",
-      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }),
-      signal: currentController.signal });
-    const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = "";
-    for (;;) {
-      const { done: d, value } = await reader.read(); if (d) break;
-      buf += dec.decode(value, { stream: true }); let i;
-      while ((i = buf.indexOf("\n\n")) >= 0) {
-        const line = buf.slice(0, i).trim(); buf = buf.slice(i + 2);
-        if (!line.startsWith("data:")) continue;
-        let ev; try { ev = JSON.parse(line.slice(5)); } catch { continue; }
-        if (ev.type === "thinking" && !acc) body.innerHTML = '<span class="typing"><i></i><i></i><i></i></span>';
-        else if (ev.type === "reset") { acc = ""; body.innerHTML = '<span class="typing"><i></i><i></i><i></i></span>'; }
-        else if (ev.type === "progress") { const c = document.createElement("div"); c.className = "tool-chip"; c.innerHTML = `<b>⚙</b><i>${esc(ev.text)}</i>`; bubble.insertBefore(c, body); }
-        else if (ev.type === "tool") { const c = document.createElement("div"); c.className = "tool-chip"; c.innerHTML = `<b>⚙ ${esc(ev.name)}</b><i>${esc(ev.brief)}</i>`; bubble.insertBefore(c, body); }
-        else if (ev.type === "delta") {
-          acc += ev.text; setBody(body, acc, "evo");
-          if ($("voiceOut").checked) ttsFeed(ev.text);   // speak sentences as they complete
-          scrollArea.scrollTop = scrollArea.scrollHeight;
-        }
-        else if (ev.type === "done") { done = true; acc = ev.text || acc; setBody(body, acc, "evo"); }
-        else if (ev.type === "error" && ev.text !== "cancelled") toast(ev.text);
+  let acc = "", finished = false;
+  aqCancel();                                    // fresh audio floor
+  const finish = () => {
+    if (finished) return;
+    finished = true; turnHandler = null; currentController = null;
+    sb.classList.add("hidden");
+    bubble.classList.remove("streaming");
+    if (!aq.cur && !aq.items.length) faceState("idle");
+  };
+  currentController = { abort() { wsCancelTurn(); finish(); toast("Stopped."); } };
+  turnHandler = ev => {
+    switch (ev.type) {
+      case "thinking": if (!acc) body.innerHTML = typingHTML(); break;
+      case "reset": acc = ""; body.innerHTML = typingHTML(); break;
+      case "progress": {
+        const c = document.createElement("div"); c.className = "tool-chip";
+        c.innerHTML = `<b>⚙</b><i>${esc(ev.text)}</i>`; bubble.insertBefore(c, body); break;
       }
+      case "tool": {
+        const c = document.createElement("div"); c.className = "tool-chip";
+        c.innerHTML = `<b>⚙ ${esc(ev.name)}</b><i>${esc(ev.brief)}</i>`; bubble.insertBefore(c, body); break;
+      }
+      case "delta":
+        acc += ev.text; setBody(body, acc, "evo");
+        scrollArea.scrollTop = scrollArea.scrollHeight;
+        break;
+      case "final":
+        acc = ev.reply || acc || "(no response)";
+        setBody(body, acc, "evo");
+        finish();
+        break;
+      case "error":
+        if (ev.text === "busy") { toast("EVO is still answering the previous request."); finish(); }
+        else if (ev.text !== "cancelled") toast(ev.text);
+        break;
     }
-    if (!done) setBody(body, acc || "(no response)", "evo");
-    // TTS — flush the unspoken tail (sentences already queued live)
-    if ($("voiceOut").checked && acc) {
-      ttsFlush();
-      if (!tts.q.length && !tts.busy && !currentAudio) faceState("idle");
-    } else faceState("idle");
-  } catch (e) {
-    if (!done && !acc) setBody(body, "Connection lost.", "evo");
-    faceState("idle");
-  } finally {
-    bubble.classList.remove("streaming"); currentController = null; sb.classList.add("hidden");
-  }
+  };
+  wsSend({ type: "say", text, voice: $("voiceOut").checked });
 }
 
 $("chatForm").addEventListener("submit", e => { e.preventDefault(); const v = $("chatInput").value.trim(); $("chatInput").value = ""; $("chatInput").style.height = "auto"; sendStreaming(v); });
@@ -236,18 +213,80 @@ $("chatInput").addEventListener("input", function () { this.style.height = "auto
 document.addEventListener("keydown", e => { if (e.key === "Escape" && currentController) { currentController.abort(); toast("Stopped."); } });
 $("stopBtn")?.addEventListener("click", () => { if (currentController) { currentController.abort(); toast("Stopped."); } });
 
-/* PTT */
+/* PTT — primary: Web Speech API (browser-native streaming STT, no server
+   round trip, no whisper wait). Fallback: legacy record->WAV->/api/transcribe
+   for browsers without SpeechRecognition or when the service errors. */
 let mediaStream, audioCtx, processor, sourceNode, pttRecording, speechSeen, quietFrames, collected;
 const PTT_RATE = 16000;
+const SRClass = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recog = null, srGotFinal = false;
 
-async function pttStart() {
+function pttStart() {
   if (pttRecording) return;
   if (currentController) currentController.abort();
-  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+  aqCancel();                                    // stop speech, free the floor
+  if (SRClass) return srStart();
+  return legacyRecorderStart();
+}
+function pttFinish() {
+  if (!pttRecording) return;
+  if (recog) { try { recog.stop(); } catch {} return; }   // let final arrive
+  legacyRecorderFinish();
+}
+
+/* --- browser-native recognition --- */
+function srStart() {
+  recog = new SRClass();
+  recog.lang = "en-US";
+  recog.continuous = false;
+  recog.interimResults = true;
+  recog.maxAlternatives = 1;
+  pttRecording = true; srGotFinal = false;
+  $("pttBtn").classList.add("on"); faceState("listening");
+  $("sttPreview").textContent = "Listening… speak now";
+  recog.onresult = e => {
+    let interim = "", fin = "";
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const r = e.results[i];
+      if (r.isFinal) fin += r[0].transcript; else interim += r[0].transcript;
+    }
+    if (interim) $("sttPreview").textContent = interim;
+    if (fin && !srGotFinal) { srGotFinal = true; srFinish(fin); }
+  };
+  recog.onerror = e => {
+    const why = e.error || "";
+    if (!pttRecording) return;
+    srReset();
+    if (why === "not-allowed" || why === "service-not-allowed") { toast("Microphone/speech blocked."); return; }
+    toast(`Speech service unavailable (${why}) — falling back to local Whisper.`);
+    legacyRecorderStart();
+  };
+  recog.onend = () => { if (pttRecording && !srGotFinal) srReset(); };
+  try { recog.start(); }
+  catch { srReset(); legacyRecorderStart(); }
+}
+function srFinish(text) {
+  srReset();
+  const t = (text || "").trim();
+  $("sttPreview").textContent = "";
+  if (!t) { toast("Didn't catch that."); faceState("idle"); return; }
+  sendStreaming(t);                              // straight to the brain
+}
+function srReset() {
+  pttRecording = false;
+  $("pttBtn").classList.remove("on");
+  try { recog && recog.abort(); } catch {}
+  recog = null;
+}
+
+/* --- legacy fallback: record WAV -> /api/transcribe -> sendStreaming --- */
+async function legacyRecorderStart() {
+  if (pttRecording) return;
+  if (currentController) currentController.abort();
   try { mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } }); }
   catch { toast("Microphone blocked."); return; }
   pttRecording = true; speechSeen = false; quietFrames = 0; collected = [];
-  ttsCancel();                                   // stop speech, free the floor
+  aqCancel();
   try { audioCtx = new AudioContext({ sampleRate: PTT_RATE }); } catch { audioCtx = new AudioContext(); }
   sourceNode = audioCtx.createMediaStreamSource(mediaStream);
   processor = audioCtx.createScriptProcessor(2048, 1, 1);
@@ -259,14 +298,14 @@ async function pttStart() {
     if (peak > .06) { speechSeen = true; quietFrames = 0; } else if (speechSeen) quietFrames++;
     for (let i = 0; i < input.length; i++) collected.push(input[i]);
     const frameMs = input.length / rate * 1000, elapsed = collected.length / rate * 1000;
-    if ((speechSeen && quietFrames * frameMs > 1000) || elapsed > 9000) pttFinish();
+    if ((speechSeen && quietFrames * frameMs > 1000) || elapsed > 9000) legacyRecorderFinish();
   };
   sourceNode.connect(processor); processor.connect(audioCtx.destination);
   $("pttBtn").classList.add("on"); faceState("listening");
   $("sttPreview").textContent = "Listening… speak now";
 }
 
-async function pttFinish() {
+async function legacyRecorderFinish() {
   if (!pttRecording) return;
   pttRecording = false; $("pttBtn").classList.remove("on");
   try { processor.disconnect(); sourceNode.disconnect(); } catch {}
@@ -275,7 +314,7 @@ async function pttFinish() {
   const samples = new Int16Array(collected.length);
   for (let i = 0; i < collected.length; i++) { const s = Math.max(-1, Math.min(1, collected[i])); samples[i] = s < 0 ? s * 0x8000 : s * 0x7fff; }
   collected = []; try { await audioCtx.close(); } catch {} audioCtx = null;
-  if (!speechSeen || samples.length < rate / 2) { $("sttPreview").textContent = ""; toast("Didn't hear anything."); return; }
+  if (!speechSeen || samples.length < rate / 2) { $("sttPreview").textContent = ""; toast("Didn't hear anything."); faceState("idle"); return; }
   $("sttPreview").textContent = "Transcribing…"; faceState("thinking");
   try {
     const wav = encodeWav(samples, rate);
@@ -298,7 +337,7 @@ async function pttFinish() {
   } catch (e) {
     $("sttPreview").textContent = ""; faceState("idle");
     const msg = e && e.message ? e.message.replace(/\[object Object\]/g, "").trim() : "";
-    toast(`Transcription failed${msg ? ` (${msg})` : ""}. If it says "query/request", restart EVO - the server is running old code.`);
+    toast(`Transcription failed${msg ? ` (${msg})` : ""}.`);
   }
 }
 
@@ -318,7 +357,7 @@ $("pttBtn").addEventListener("click", () => { if (pttRecording) pttFinish(); els
 async function boot() {
   try {
     const h = await (await fetch("/api/health")).json();
-    $("engineTag").textContent = `${h.voice.split(":")[0]} · ${h.llm_online === true ? "online" : h.llm_online === false ? "offline" : "checking"}`;
+    $("engineTag").textContent = `piper · ${h.llm_online === true ? "online" : h.llm_online === false ? "offline" : "checking"}`;
     $("conn").className = "dot online";
     const hr = new Date().getHours(), part = hr < 12 ? "morning" : hr < 18 ? "afternoon" : "evening";
     $("greet").textContent = `Good ${part}. EVO MK2 online.`;
@@ -334,12 +373,14 @@ $("chatInput").addEventListener("input", function () { this.style.height = "auto
    Receives proactive events from the server: reminders firing,
    research completing, watcher alerts, etc. Without this, all
    those things happen server-side and are INVISIBLE to you. */
-/* Always-on conversation mode: mic stays open, replies are spoken. */
+/* Always-on conversation mode (local Vosk loop): mic stays open, replies
+   are spoken through the same Piper-first TTS. The Web Speech PTT above is
+   the primary voice input; this toggle is for hands-free at the desk. */
 let convoOn = false;
 $("convoBtn").addEventListener("click", async () => {
   const want = !convoOn;
   try {
-    if (want) ttsCancel();                       // free the audio floor
+    if (want) aqCancel();
     const r = await fetch("/api/voice/convo", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -348,7 +389,7 @@ $("convoBtn").addEventListener("click", async () => {
     const j = await r.json();
     convoOn = !!j.running;
     $("convoBtn").classList.toggle("on", convoOn);
-    toast(convoOn ? "🎙 Conversation mode on — just talk."
+    toast(convoOn ? "Conversation mode on — just talk."
                   : "Conversation mode closed.");
   } catch { toast("Could not toggle conversation mode."); }
 });
@@ -384,6 +425,11 @@ es.onmessage = (m) => {
     }
     if (ev.type === "convo.turn") {
       const u = ev.payload?.text || "", r = ev.payload?.reply || "";
+      if (u) addMsg(u, "user");
+      if (r) addMsg(r, "evo", { highlight: false });
+    }
+    if (ev.type === "voice.turn") {              // live WebRTC voice turns
+      const u = ev.payload?.user || "", r = ev.payload?.reply || "";
       if (u) addMsg(u, "user");
       if (r) addMsg(r, "evo", { highlight: false });
     }

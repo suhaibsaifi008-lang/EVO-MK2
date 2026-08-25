@@ -2,14 +2,16 @@
 import asyncio
 import json
 import queue as _queue
+import re
 import threading
 import time
 from collections import deque
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
+from starlette.websockets import WebSocketState
 
 from . import brain, config, db, llm, tools
 
@@ -19,6 +21,14 @@ UI = Path(config.UI_DIR)
 from . import events_api as _events  # noqa: E402
 
 _events.register(app)
+
+try:
+    from .voice import webrtc_v2  # noqa: E402
+
+    webrtc_v2.register(app)
+except Exception as _voice_exc:  # noqa: BLE001
+    webrtc_v2 = None
+    print(f"[voice-v2] registration failed: {_voice_exc}", file=__import__("sys").stderr)
 
 _llm_probe = {"ts": 0.0, "ok": False, "probing": False}
 
@@ -87,6 +97,12 @@ def health():
         voice = f"{st['engine']}:{st['state']}"
     except Exception as exc:
         voice = f"error:{str(exc)[:60]}"
+    voice_v2 = {"available": False, "enabled": False, "client_url": ""}
+    try:
+        if webrtc_v2 is not None:
+            voice_v2 = webrtc_v2.status()
+    except Exception as exc:
+        voice_v2 = {"available": False, "enabled": False, "error": str(exc)[:80]}
     return {
         "ok": True,
         "name": config.settings.name,
@@ -94,6 +110,7 @@ def health():
         "providers": [p["name"] for p in llm._providers()],
         "tools": len(tools.manifest()),
         "voice": voice,
+        "voice_v2": voice_v2,
         "version": "mk2-0.1",
     }
 
@@ -102,6 +119,199 @@ def health():
 def chat(body: ChatIn) -> dict:
     reply = brain.handle_turn(body.text)
     return {"reply": reply}
+
+
+_SENT_SPLIT = re.compile(r".*?[.!?]+(?:\s+|$)")
+
+
+def _split_sentences(buf: str) -> tuple[list[str], str]:
+    """Complete sentences + remainder (same rule the old client used)."""
+    out: list[str] = []
+    while True:
+        m = _SENT_SPLIT.match(buf)
+        if not m or m.end() == 0:
+            break
+        sent, buf = buf[:m.end()].strip(), buf[m.end():]
+        if sent:
+            out.append(sent)
+    return out, buf
+
+
+@app.websocket("/ws/voice")
+async def ws_voice(ws: WebSocket) -> None:
+    """Voice turn transport: ONE socket carries reply text AND audio.
+
+    Client sends {"type":"say","text":...} (brain turn) or
+    {"type":"tts","text":...} (speak-only, e.g. proactive notifications),
+    {"type":"cancel"} to abort.
+
+    Server behaviour:
+    - brain events stream down as JSON frames as they happen,
+    - each COMPLETED sentence is synthesized immediately (Piper-first) in a
+      worker that runs while the LLM is still generating, pushed as a JSON
+      audio header followed by raw audio bytes -> client-side playback is
+      gapless because sentence N+1 is synthesized/fetched during sentence N.
+    """
+    await ws.accept()
+    loop = asyncio.get_running_loop()
+    state = {"busy": False, "cancel": False}
+    inbox: asyncio.Queue = asyncio.Queue()   # client messages, read always
+
+    async def push_audio(text: str, idx: int) -> None:
+        from .voice import tts_best
+
+        path = await loop.run_in_executor(None, tts_best.synthesize_best,
+                                          " ".join(text.split())[:600])
+        if not path or ws.client_state != WebSocketState.CONNECTED:
+            return
+        data = path.read_bytes()
+        if ws.client_state != WebSocketState.CONNECTED:
+            return
+        await ws.send_json({"type": "audio", "i": idx,
+                            "fmt": path.suffix.lstrip(".").lstrip("_"),
+                            "bytes": len(data)})
+        await ws.send_bytes(data)
+
+    async def tts_worker(aq: asyncio.Queue) -> None:
+        i = 0
+        while True:
+            item = await aq.get()
+            try:
+                if item is None or not isinstance(item, str):
+                    return
+                if state["cancel"]:
+                    continue
+                await push_audio(item, i)
+                i += 1
+            except Exception:
+                return
+            finally:
+                aq.task_done()
+
+    async def reader() -> None:
+        try:
+            while True:
+                inbox.put_nowait(await ws.receive_json())
+        except Exception:
+            inbox.put_nowait(None)
+
+    reader_task = asyncio.create_task(reader())
+
+    async def run_say(text: str, want_audio: bool) -> None:
+        aq: asyncio.Queue = asyncio.Queue()   # sentences -> audio worker
+        worker = asyncio.create_task(tts_worker(aq))
+
+        # Thread->loop handoff done via a plain buffer (GIL-atomic appends)
+        # drained by the loop side. No callback-ordering races possible.
+        evbuf: list = []
+        evbuf_lock = threading.Lock()
+
+        def on_event(ev: dict) -> None:
+            with evbuf_lock:
+                evbuf.append(ev)
+
+        def take_events() -> list:
+            with evbuf_lock:
+                out, evbuf[:] = evbuf[:], []
+            return out
+
+        ex = loop.run_in_executor(
+            None, lambda: brain.handle_turn(
+                text, on_event=on_event,
+                cancelled=lambda: state["cancel"]))
+
+        acc_tail = ""
+        reply = ""
+
+        def handle_event(res: dict) -> None:
+            nonlocal acc_tail, reply
+            if res.get("type") == "delta":
+                if ws.client_state == WebSocketState.CONNECTED:
+                    asyncio.ensure_future(ws.send_json(res))   # live bubble
+                acc_tail += str(res.get("text") or "")
+                sents, acc_tail = _split_sentences(acc_tail)
+                if want_audio and not state["cancel"]:
+                    for s in sents:
+                        aq.put_nowait(s)
+            elif res.get("type") == "done":
+                reply = res.get("text") or ""          # final frame covers it
+            elif ws.client_state == WebSocketState.CONNECTED:
+                asyncio.ensure_future(ws.send_json(res))
+
+        async def handle_client_frame(msg) -> None:
+            if msg is None:
+                state["cancel"] = True
+                return
+            kind = (msg or {}).get("type")
+            if kind == "cancel":
+                state["cancel"] = True
+            else:
+                await ws.send_json({"type": "error", "text": "busy"})
+
+        while True:
+            for ev in take_events():
+                handle_event(ev)
+            if ex.done():
+                break
+            try:
+                frame = await asyncio.wait_for(inbox.get(), timeout=0.01)
+                await handle_client_frame(frame)
+            except asyncio.TimeoutError:
+                pass
+        for ev in take_events():                      # final drain
+            handle_event(ev)
+        try:
+            reply = ex.result() or reply              # authoritative
+        except Exception as exc:  # noqa: BLE001
+            reply = reply or f"Error: {str(exc)[:150]}"
+        tail = acc_tail.strip()
+        if tail and want_audio and not state["cancel"]:
+            aq.put_nowait(tail)
+        aq.put_nowait(None)
+
+        try:                                       # flush ALL audio first
+            await asyncio.wait_for(worker, timeout=180)
+        except Exception:
+            worker.cancel()
+        if ws.client_state == WebSocketState.CONNECTED:
+            await ws.send_json({"type": "final", "reply": reply})
+
+    try:
+        while True:
+            msg = await inbox.get()
+            if msg is None:
+                break
+            kind = (msg or {}).get("type")
+            if kind == "cancel":
+                state["cancel"] = True
+                continue
+            text = str((msg or {}).get("text") or "").strip()
+            if not text:
+                continue
+            if kind == "tts" and not state["busy"]:
+                await push_audio(text[:600], 0)
+                continue
+            if kind != "say":
+                continue
+            if state["busy"]:
+                await ws.send_json({"type": "error", "text": "busy"})
+                continue
+            state["busy"], state["cancel"] = True, False
+            try:
+                await run_say(text, bool((msg or {}).get("voice", True)))
+            except Exception as exc:  # noqa: BLE001
+                try:
+                    await ws.send_json({"type": "error",
+                                        "text": str(exc)[:200]})
+                except Exception:
+                    pass
+            finally:
+                state["busy"] = False
+    except WebSocketDisconnect:
+        pass
+    finally:
+        state["cancel"] = True
+        reader_task.cancel()
 
 
 @app.post("/api/chat/stream")

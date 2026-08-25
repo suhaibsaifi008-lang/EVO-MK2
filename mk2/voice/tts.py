@@ -148,6 +148,111 @@ def _edge_mp3(text: str, stop: threading.Event) -> Path | None:
     return None
 
 
+# ---------------- piper (local neural, primary engine) ----------------
+# Voice: jgkawell/jarvis from HuggingFace (free, CPU, ~60 MB medium).
+# Files cached under DATA/models/piper via huggingface_hub local_dir.
+
+PIPER_DIR = DATA / "models" / "piper"
+_PIPER_LOCK = threading.Lock()
+_piper_voice = None          # loaded singleton
+_piper_failed = False        # sticky: never retry a broken install per-process
+
+
+def _piper_repo() -> str:
+    return os.environ.get("EVO_PIPER_REPO", "jgkawell/jarvis").strip()
+
+
+def _piper_voice_file() -> str:
+    """Repo-relative path of the ONNX voice. Env: EVO_PIPER_VOICE."""
+    return os.environ.get(
+        "EVO_PIPER_VOICE", "en/en_GB/jarvis/medium/jarvis-medium.onnx").strip()
+
+
+def _piper_paths() -> tuple[Path, Path]:
+    # hf_hub_download(local_dir=...) preserves the repo subpath:
+    # PIPER_DIR / en/en_GB/jarvis/medium/jarvis-medium.onnx
+    model = PIPER_DIR / Path(_piper_voice_file())
+    config = model.with_name(model.name + ".json")
+    if not (model.exists() and model.stat().st_size > 1024
+            and config.exists()):
+        PIPER_DIR.mkdir(parents=True, exist_ok=True)
+        from huggingface_hub import hf_hub_download
+
+        for fn in (_piper_voice_file(), _piper_voice_file() + ".json"):
+            hf_hub_download(repo_id=_piper_repo(), filename=fn,
+                            local_dir=str(PIPER_DIR))
+    return model, config
+
+
+def _piper_load():
+    global _piper_voice
+    if _piper_voice is not None:
+        return _piper_voice
+    with _PIPER_LOCK:
+        if _piper_voice is None:
+            from piper import PiperVoice
+
+            model, config = _piper_paths()
+            _piper_voice = PiperVoice.load(model, config_path=config)
+    return _piper_voice
+
+
+def piper_available() -> bool:
+    try:
+        _piper_load()
+        return True
+    except Exception as exc:  # noqa: BLE001
+        global _piper_failed
+        _piper_failed = True
+        print(f"[tts] piper unavailable: {str(exc)[:160]}", flush=True)
+        return False
+
+
+def warm_piper() -> None:
+    """Preload the voice in a daemon thread so first reply pays no load tax."""
+
+    def run() -> None:
+        try:
+            v = _piper_load()
+            v.synthesize("Voice systems online.")
+        except Exception:
+            pass
+
+    threading.Thread(target=run, daemon=True, name="mk2-piper-warm").start()
+
+
+def _piper_wav(text: str) -> Path | None:
+    text = sanitize_speech(text)
+    if not text:
+        return None
+    key = hashlib.sha1(("piper|" + text).encode()).hexdigest()[:20] + ".wav"
+    out = TTS_DIR / key
+    if out.exists() and out.stat().st_size > 512:
+        return out
+    import wave
+
+    try:
+        voice = _piper_load()
+        chunks = list(voice.synthesize(text[:600]))
+        if not chunks:
+            return None
+        sr = chunks[0].sample_rate
+        sw = chunks[0].sample_width
+        ch = chunks[0].sample_channels
+        payload = b"".join(c.audio_int16_bytes for c in chunks)
+        tmp = out.with_suffix(".part")
+        with wave.open(str(tmp), "wb") as w:
+            w.setnchannels(ch)
+            w.setsampwidth(sw)
+            w.setframerate(sr)
+            w.writeframes(payload)
+        tmp.replace(out)
+        return out
+    except Exception as exc:  # noqa: BLE001
+        print(f"[tts] piper synth failed: {str(exc)[:120]}", flush=True)
+        return None
+
+
 def _mci_play(path: Path, stop: threading.Event, alias: str) -> bool:
     import ctypes
 
@@ -201,9 +306,11 @@ class Speaker:
         alias = f"mk2{self._n}{int(time.time()*1000)%100000}"
         engine = os.environ.get("EVO_TTS_ENGINE", "auto")
         path = None
-        if engine in ("auto", "sapi") and len(text) <= 90:
+        if engine in ("auto", "piper") and not stop.is_set():
+            path = _piper_wav(text)
+        if path is None and engine in ("auto", "sapi") and len(text) <= 90:
             path = _sapi_wav(text)
-        if path is None and not stop.is_set():
+        if path is None and engine in ("auto", "edge") and not stop.is_set():
             path = _edge_mp3(text, stop)
         if path is None:
             return
