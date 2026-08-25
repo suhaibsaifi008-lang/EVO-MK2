@@ -229,3 +229,55 @@ class TestPiperWavReal:
         with wave.open(str(p), "rb") as w:
             dur = w.getnframes() / w.getframerate()
         assert dur > 0.5
+
+
+class TestFastLadderRouting:
+    """voice=True must drive role='fast'; typed turns keep 'primary'."""
+
+    def _capture_role(self, monkeypatch, **kw):
+        from mk2 import brain
+
+        seen = {}
+
+        def fake_stream(messages, temperature=0.4, role="primary", **k):
+            seen["role"] = role
+            yield "Done."
+
+        monkeypatch.setattr(brain.llm, "chat_stream", fake_stream)
+        brain.handle_turn("say something clever", **kw)
+        return seen["role"]
+
+    def test_voice_turn_uses_fast(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(db, "DB_PATH", tmp_path / "r1.db")
+        db.migrate()
+        assert self._capture_role(monkeypatch, voice=True) == "fast"
+
+    def test_typed_turn_keeps_primary(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(db, "DB_PATH", tmp_path / "r2.db")
+        db.migrate()
+        assert self._capture_role(monkeypatch) == "primary"
+
+    def test_ws_voice_passes_voice_true(self, tmp_path, monkeypatch):
+        import json as _json
+        from mk2 import brain
+        from mk2.server import app
+
+        monkeypatch.setattr(db, "DB_PATH", tmp_path / "r3.db")
+        db.migrate()
+        got = {}
+
+        def scripted(text, on_event=None, cancelled=None, **kw):
+            got["voice"] = kw.get("voice")
+            if on_event:
+                on_event({"type": "done", "text": "ok"})
+            return "ok"
+
+        monkeypatch.setattr(brain, "handle_turn", scripted)
+        client = TestClient(app)
+        with client.websocket_connect("/ws/voice") as ws:
+            ws.send_json({"type": "say", "text": "hi"})
+            while True:
+                ev = _json.loads(ws.receive_text())
+                if ev["type"] == "final":
+                    break
+        assert got["voice"] is True

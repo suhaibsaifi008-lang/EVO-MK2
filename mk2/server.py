@@ -218,7 +218,8 @@ async def ws_voice(ws: WebSocket) -> None:
         ex = loop.run_in_executor(
             None, lambda: brain.handle_turn(
                 text, on_event=on_event,
-                cancelled=lambda: state["cancel"]))
+                cancelled=lambda: state["cancel"],
+                voice=True))
 
         acc_tail = ""
         reply = ""

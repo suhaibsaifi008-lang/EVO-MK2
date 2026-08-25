@@ -117,8 +117,13 @@ def handle_turn(
     surface: str = "console",
     on_event: Callable[[dict], None] | None = None,
     cancelled: Callable[[], bool] | None = None,
+    voice: bool = False,
 ) -> str:
-    """Full turn pipeline. Emits events: thinking|tool|delta|done|error."""
+    """Full turn pipeline. Emits events: thinking|tool|delta|done|error.
+
+    voice=True routes generation down the fast ladder (role="fast") so
+    spoken replies skip the slow high-intelligence models; typed chat keeps
+    role="primary"."""
     turn_id = uuid.uuid4().hex[:12]
 
     def emit(ev: dict) -> None:
@@ -199,8 +204,10 @@ def handle_turn(
         emit({"type": "thinking"})
         parts: list[str] = []
         emit_mode: bool | None = None
+        role = "fast" if voice else "primary"
         try:
-            for delta in llm.chat_stream(messages, temperature=0.4):
+            for delta in llm.chat_stream(messages, temperature=0.4,
+                                         role=role):
                 if check_cancel():
                     raise TurnCancelled()
                 parts.append(delta)
@@ -229,6 +236,7 @@ def handle_turn(
                 emit_mode = None
                 try:
                     for delta in llm.chat_stream(messages, temperature=0.4,
+                                                 role=role,
                                                  timeout=max(10, int(remaining))):
                         if check_cancel():
                             raise TurnCancelled()
