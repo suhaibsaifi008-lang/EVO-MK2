@@ -373,10 +373,11 @@ $("chatInput").addEventListener("input", function () { this.style.height = "auto
    Receives proactive events from the server: reminders firing,
    research completing, watcher alerts, etc. Without this, all
    those things happen server-side and are INVISIBLE to you. */
-/* Hands-free live mic: browser-native CONTINUOUS recognition — the same
-   accurate engine as PTT, no local Vosk. Every finished phrase becomes a
-   turn; interim words stream into the preview line. Falls back to the old
-   local Vosk loop only when SpeechRecognition is unavailable/offline. */
+/* Hands-free live mic. Primary: browser-native continuous recognition
+   (streaming interims). Fallback: fully-local faster-whisper loop with
+   energy-based utterance endpointing — no cloud dependency at all, so the
+   mic still works when Chrome's speech servers are unreachable.
+   (The old Vosk server loop is no longer used by the console.) */
 let micOn = false;
 let handsFree = null;
 
@@ -384,23 +385,81 @@ function hfStop() {
   micOn = false;
   try { handsFree && handsFree.abort(); } catch {}
   handsFree = null;
+  wlStop();
   $("convoBtn").classList.remove("on");
   $("sttPreview").textContent = "";
   faceState("idle");
 }
 
-async function startLocalConvoFallback() {     // legacy Vosk loop (no SR)
+/* ---- local Whisper live-mic engine (offline fallback) ---- */
+const wl = { on: false, ctx: null, proc: null, src: null, stream: null,
+             buf: [], seen: false, quiet: 0, busy: false };
+
+async function wlStart() {
+  if (wl.on) return;
   try {
-    const r = await fetch("/api/voice/convo", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ on: true })
-    });
-    const j = await r.json();
-    micOn = !!j.running;
-    $("convoBtn").classList.toggle("on", micOn);
-    toast(micOn ? "Live mic on (local engine) — just talk."
-                : "Could not open the mic.");
-  } catch { toast("Could not toggle conversation mode."); }
+    wl.stream = await navigator.mediaDevices.getUserMedia(
+      { audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+  } catch { toast("Microphone blocked."); hfStop(); return; }
+  wl.on = true; wl.seen = false; wl.quiet = 0; wl.buf = []; wl.busy = false;
+  try { wl.ctx = new AudioContext({ sampleRate: 16000 }); }
+  catch { wl.ctx = new AudioContext(); }
+  wl.src = wl.ctx.createMediaStreamSource(wl.stream);
+  wl.proc = wl.ctx.createScriptProcessor(2048, 1, 1);
+  const rate = wl.ctx.sampleRate;
+  wl.proc.onaudioprocess = ev => {
+    if (!wl.on) return;
+    const input = ev.inputBuffer.getChannelData(0);
+    let peak = 0;
+    for (let i = 0; i < input.length; i++) { const v = Math.abs(input[i]); if (v > peak) peak = v; }
+    const frameMs = input.length / rate * 1000;
+    if (peak > .06) { wl.seen = true; wl.quiet = 0; }
+    else if (wl.seen) wl.quiet++;
+    if (wl.seen) for (let i = 0; i < input.length; i++) wl.buf.push(input[i]);
+    const heldMs = wl.buf.length / rate * 1000;
+    // end of utterance: spoke, then ~0.8s quiet — or hard cap 12s
+    if ((wl.seen && !wl.busy && wl.quiet * frameMs > 800) || heldMs > 12000) {
+      wlUtterance(rate);
+    }
+  };
+  wl.src.connect(wl.proc); wl.proc.connect(wl.ctx.destination);
+  faceState("listening");
+}
+
+async function wlUtterance(rate) {
+  const raw = wl.buf;
+  wl.buf = []; wl.seen = false; wl.quiet = 0;
+  if (!raw.length || raw.length < rate * 0.4) return;    // <0.4s: noise
+  wl.busy = true;
+  $("sttPreview").textContent = "Transcribing…";
+  faceState("thinking");
+  try {
+    const samples = new Int16Array(raw.length);
+    for (let i = 0; i < raw.length; i++) {
+      const s = Math.max(-1, Math.min(1, raw[i]));
+      samples[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+    const res = await fetch("/api/transcribe",
+                            { method: "POST", body: encodeWav(samples, rate) });
+    const data = await res.json();
+    const t = (data.text || "").trim();
+    if (t) {
+      if (currentController) $("sttPreview").textContent = "(still answering) " + t;
+      else sendStreaming(t);
+    }
+  } catch { /* keep the loop alive regardless */ }
+  $("sttPreview").textContent = micOn ? "Listening…" : "";
+  wl.busy = false;
+}
+
+function wlStop() {
+  wl.on = false;
+  try { wl.proc && wl.proc.disconnect(); } catch {}
+  try { wl.src && wl.src.disconnect(); } catch {}
+  try { wl.stream && wl.stream.getTracks().forEach(t => t.stop()); } catch {}
+  try { wl.ctx && wl.ctx.close(); } catch {}
+  wl.proc = wl.src = wl.ctx = wl.stream = null;
+  wl.buf = []; wl.seen = false; wl.quiet = 0; wl.busy = false;
 }
 
 function hfStart() {
@@ -425,7 +484,7 @@ function hfStart() {
     if (interim) $("sttPreview").textContent = "… " + interim;
   };
   handsFree.onend = () => {                   // Chrome pauses periodically
-    if (micOn) { try { handsFree.start(); } catch {} }
+    if (micOn && handsFree) { try { handsFree.start(); } catch {} }
   };
   handsFree.onerror = ev => {
     if (ev.error === "not-allowed" || ev.error === "service-not-allowed") {
@@ -435,10 +494,11 @@ function hfStart() {
     }
     if (!micOn || !handsFree) return;
     if (ev.error === "network" || ev.error === "audio-capture") {
-      toast("Speech service unreachable — switching to the local engine.");
-      const keepMic = micOn;
-      hfStop();
-      if (keepMic) startLocalConvoFallback();
+      // Google speech servers unreachable -> stay fully local.
+      toast("Speech service unreachable — live mic is now on local Whisper.");
+      try { handsFree.abort(); } catch {}
+      handsFree = null;
+      wlStart();                              // same mic button, local engine
     }
     // 'no-speech' etc: ignore, continuous session keeps going
   };
@@ -447,27 +507,17 @@ function hfStart() {
 
 $("convoBtn").addEventListener("click", async () => {
   if (micOn) {
-    if (handsFree) hfStop();
-    else {
-      try { await fetch("/api/voice/convo", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ on: false }) }); } catch {}
-      micOn = false;
-      $("convoBtn").classList.remove("on");
-    }
+    hfStop();
     toast("Live mic closed.");
     return;
   }
   aqCancel();
-  if (SRClass) {
-    micOn = true;
-    $("convoBtn").classList.add("on");
-    $("sttPreview").textContent = "Listening… just talk.";
-    toast("Live mic open — speak naturally.");
-    hfStart();
-  } else {
-    await startLocalConvoFallback();
-  }
+  micOn = true;
+  $("convoBtn").classList.add("on");
+  $("sttPreview").textContent = "Listening… just talk.";
+  toast("Live mic open — speak naturally.");
+  if (SRClass) hfStart();
+  else wlStart();                             // no SR support: straight to Whisper
 });
 
 const es = new EventSource("/api/events");
