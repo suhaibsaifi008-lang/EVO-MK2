@@ -148,7 +148,8 @@ def handle_turn(
         memory.record_turn(text, instant, surface)
         emit({"type": "done", "text": instant})
         db.trace(turn_id, "total_fastcmd", (time.time() - t0) * 1000)
-        bus.publish("convo.turn", {"id": turn_id, "text": text, "reply": instant})
+        if surface != "console":  # console renders locally
+            bus.publish("convo.turn", {"id": turn_id, "text": text, "reply": instant})
         return instant
 
     fast = _fast_path(text)
@@ -156,7 +157,8 @@ def handle_turn(
         memory.record_turn(text, fast, surface)
         emit({"type": "done", "text": fast})
         db.trace(turn_id, "total_fastpath", (time.time() - t0) * 1000)
-        bus.publish("convo.turn", {"id": turn_id, "text": text, "reply": fast})
+        if surface != "console":  # console renders locally
+            bus.publish("convo.turn", {"id": turn_id, "text": text, "reply": fast})
         return fast
 
     messages = memory.build_context_messages(text, surface)
@@ -319,7 +321,8 @@ def handle_turn(
                        "I'll report back here when it's done.")
                 emit({"type": "done", "text": ack})
                 memory.record_turn(text, ack, surface)
-                bus.publish("convo.turn", {"id": turn_id, "text": text, "reply": ack})
+                if surface != "console":  # console renders locally
+                    bus.publish("convo.turn", {"id": turn_id, "text": text, "reply": ack})
                 return ack
 
             tools.set_emitter(emit)
@@ -366,8 +369,10 @@ def handle_turn(
     memory.record_turn(text, answer, surface)
     emit({"type": "done", "text": answer})
     db.trace(turn_id, "total_agent", (time.time() - t0) * 1000, f"steps={step + 1}")
-    bus.publish("convo.turn", {"id": turn_id, "text": text, "reply": answer})
+    if surface != "console":  # console renders locally
+        bus.publish("convo.turn", {"id": turn_id, "text": text, "reply": answer})
     return answer
+
 
 
 

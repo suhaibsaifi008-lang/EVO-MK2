@@ -98,7 +98,9 @@ function aqPush(blob) {
 function aqPump() {
   if (aq.cur) return;
   const a = aq.items.shift();
-  if (!a) { faceState("idle"); return; }
+  if (!a) { wl.duckUntil = Date.now() + 700;   // decay before re-arming mic
+            if (!currentController) faceState("idle");
+            return; }
   aq.cur = a;
   faceState("speaking");
   const fin = () => {
@@ -196,6 +198,7 @@ async function sendStreaming(text) {
       case "final":
         acc = ev.reply || acc || "(no response)";
         setBody(body, acc, "evo");
+        wl.lastReplyHead = (ev.reply || "").toLowerCase().slice(0, 60);
         finish();
         break;
       case "error":
@@ -393,7 +396,8 @@ function hfStop() {
 
 /* ---- local Whisper live-mic engine (offline fallback) ---- */
 const wl = { on: false, ctx: null, proc: null, src: null, stream: null,
-             buf: [], seen: false, quiet: 0, busy: false };
+             buf: [], seen: false, quiet: 0, busy: false,
+             duckUntil: 0, lastReplyHead: "" };
 
 async function wlStart() {
   if (wl.on) return;
@@ -409,6 +413,12 @@ async function wlStart() {
   const rate = wl.ctx.sampleRate;
   wl.proc.onaudioprocess = ev => {
     if (!wl.on) return;
+    // Duck while EVO talks (or a reply is being generated): never listen
+    // to our own voice — this is what caused double/self answers.
+    if (aq.cur || currentController || Date.now() < wl.duckUntil) {
+      wl.buf = []; wl.seen = false; wl.quiet = 0;
+      return;
+    }
     const input = ev.inputBuffer.getChannelData(0);
     let peak = 0;
     for (let i = 0; i < input.length; i++) { const v = Math.abs(input[i]); if (v > peak) peak = v; }
@@ -417,8 +427,8 @@ async function wlStart() {
     else if (wl.seen) wl.quiet++;
     if (wl.seen) for (let i = 0; i < input.length; i++) wl.buf.push(input[i]);
     const heldMs = wl.buf.length / rate * 1000;
-    // end of utterance: spoke, then ~0.8s quiet — or hard cap 12s
-    if ((wl.seen && !wl.busy && wl.quiet * frameMs > 800) || heldMs > 12000) {
+    // end of utterance: spoke, then ~0.65s quiet — or hard cap 12s
+    if ((wl.seen && !wl.busy && wl.quiet * frameMs > 650) || heldMs > 12000) {
       wlUtterance(rate);
     }
   };
@@ -429,7 +439,7 @@ async function wlStart() {
 async function wlUtterance(rate) {
   const raw = wl.buf;
   wl.buf = []; wl.seen = false; wl.quiet = 0;
-  if (!raw.length || raw.length < rate * 0.4) return;    // <0.4s: noise
+  if (!raw.length || raw.length < rate * 0.35) return;   // <0.35s: noise
   wl.busy = true;
   $("sttPreview").textContent = "Transcribing…";
   faceState("thinking");
@@ -442,7 +452,12 @@ async function wlUtterance(rate) {
     const res = await fetch("/api/transcribe",
                             { method: "POST", body: encodeWav(samples, rate) });
     const data = await res.json();
-    const t = (data.text || "").trim();
+    let t = (data.text || "").trim();
+    // echo signature: transcribed audio that matches EVO's last reply
+    if (t && wl.lastReplyHead &&
+        wl.lastReplyHead.includes(t.toLowerCase().slice(0, 40))) {
+      t = "";
+    }
     if (t) {
       if (currentController) $("sttPreview").textContent = "(still answering) " + t;
       else sendStreaming(t);
