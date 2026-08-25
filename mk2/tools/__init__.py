@@ -119,7 +119,7 @@ def ensure_loaded() -> int:
     global _loaded
     if _loaded:
         return len(manifest())
-    from . import system_tools, web_tools, docs_tools, connectors  # noqa: F401
+    from . import system_tools, web_tools, docs_tools, connectors, browser_tools  # noqa: F401
     from .. import calendar_tools, habits, jobs, life_admin, mail_tools, research_tools, skills, vault_secrets, vault, workflows, work_tools, youtube_tools  # noqa: F401
     from .. import coder, initiative_engine, persona_loader, push_notify, security, selfcheck, style_controller  # noqa: F401
     from .. import deep_memory, ensemble, rag  # noqa: F401  (phase 4 tools + watcher)
