@@ -1,10 +1,11 @@
-"""Scheduling & Calendar Intelligence for EVO MK2 (JARVIS Phase 5 / Item 4).
+"""Scheduling & Calendar Intelligence for EVO MK2 (JARVIS Phase 5 / Task 6).
 
 Proactively manages user time: Google Calendar bidirectional sync, focus blocks,
 pre-meeting dossiers, and post-meeting follow-ups.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import sqlite3
@@ -29,6 +30,7 @@ class ScheduleAgent:
         self.consent = get_consent_manager()
         self.vault = get_credential_vault()
         self.audit = get_audit_logger()
+        self._gcal_service = None
         self._ensure_schema()
 
     def _ensure_schema(self) -> None:
@@ -51,22 +53,77 @@ class ScheduleAgent:
 
     def connect_google_calendar(self) -> MoralVerdict:
         """Connect to Google Calendar using stored OAuth2 credentials in vault."""
-        creds_data = self.vault.get("google_calendar")
-        if not creds_data:
-            return MoralVerdict.caution(
-                "No Google Calendar credentials stored. Add credentials via vault.store('google_calendar', {...}). "
-                "Falling back to local SQLite calendar."
-            )
-        return MoralVerdict.safe("Google Calendar credentials verified.")
+        try:
+            creds_data = self.vault.get("google_calendar")
+            if not creds_data:
+                return MoralVerdict.caution(
+                    "No Google Calendar credentials stored. Add credentials via vault.store('google_calendar', {...}). "
+                    "Falling back to local SQLite calendar."
+                )
+
+            try:
+                from google.oauth2.credentials import Credentials
+                from googleapiclient.discovery import build
+
+                creds = Credentials(
+                    token=creds_data.get("token"),
+                    refresh_token=creds_data.get("refresh_token"),
+                    token_uri=creds_data.get("token_uri", "https://oauth2.googleapis.com/token"),
+                    client_id=creds_data.get("client_id"),
+                    client_secret=creds_data.get("client_secret"),
+                    scopes=creds_data.get("scopes", ["https://www.googleapis.com/auth/calendar"]),
+                )
+                self._gcal_service = build("calendar", "v3", credentials=creds)
+                return MoralVerdict.safe("Google Calendar service connected successfully.")
+            except ImportError:
+                return MoralVerdict.caution("google-api-python-client or google-auth not installed.")
+        except Exception as exc:
+            log.warning("Failed connecting to Google Calendar: %s", exc)
+            return MoralVerdict.caution(f"Google Calendar connection failed: {exc}")
 
     def sync_google_calendar(self) -> MoralVerdict:
         """Pull remote Google Calendar events into local cache."""
         conn_verdict = self.connect_google_calendar()
-        if conn_verdict.verdict != "safe":
+        if conn_verdict.verdict != "safe" or not self._gcal_service:
             return conn_verdict
-        # With active credentials, google-api-python-client synchronizes events
-        log.info("Google Calendar sync completed.")
-        return MoralVerdict.safe("Google Calendar sync completed.")
+
+        try:
+            now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            events_result = self._gcal_service.events().list(
+                calendarId="primary",
+                timeMin=now_iso,
+                maxResults=50,
+                singleEvents=True,
+                orderBy="startTime",
+            ).execute()
+            items = events_result.get("items", [])
+
+            synced_count = 0
+            for item in items:
+                start_dt = item.get("start", {}).get("dateTime") or item.get("start", {}).get("date")
+                end_dt = item.get("end", {}).get("dateTime") or item.get("end", {}).get("date")
+                if not start_dt:
+                    continue
+
+                try:
+                    start_ts = datetime.datetime.fromisoformat(start_dt.replace("Z", "+00:00")).timestamp()
+                    end_ts = datetime.datetime.fromisoformat(end_dt.replace("Z", "+00:00")).timestamp() if end_dt else start_ts + 3600
+                except Exception:
+                    start_ts = time.time()
+                    end_ts = start_ts + 3600
+
+                title = item.get("summary", "Untitled Meeting")
+                location = item.get("location", "")
+                attendees = [a.get("email") for a in item.get("attendees", []) if a.get("email")]
+
+                self.add_event(title, start_ts, end_ts, attendees, location)
+                synced_count += 1
+
+            self.audit.log_action({"action": "sync_google_calendar"}, MoralVerdict.safe(), {"events_synced": synced_count})
+            return MoralVerdict.safe(f"Synchronized {synced_count} events from Google Calendar.", action={"synced": synced_count})
+        except Exception as exc:
+            log.warning("Google Calendar sync failed: %s", exc)
+            return MoralVerdict.caution(f"Google Calendar sync failed: {exc}")
 
     def push_to_google_calendar(self, event: dict[str, Any]) -> MoralVerdict:
         """Push local event to remote Google Calendar."""
@@ -74,7 +131,35 @@ class ScheduleAgent:
         v = self.ethics.evaluate(action)
         if v.verdict == "block":
             return v
-        return MoralVerdict.safe(f"Event '{event.get('title')}' pushed to Google Calendar.", action=action)
+
+        if not self.consent.has_consent("autonomy_execute"):
+            from .approval_queue import get_approval_queue
+            qid = get_approval_queue().enqueue(action, MoralVerdict.caution(f"Adding event '{event.get('title')}' to Google Calendar requires approval."))
+            return MoralVerdict.caution(f"Calendar event queued for approval (ID: {qid}).", action=action)
+
+        if self._gcal_service:
+            try:
+                start_iso = datetime.datetime.fromtimestamp(event.get("start_ts", time.time()), tz=datetime.timezone.utc).isoformat()
+                end_iso = datetime.datetime.fromtimestamp(event.get("end_ts", time.time() + 3600), tz=datetime.timezone.utc).isoformat()
+                body = {
+                    "summary": event.get("title", "Event"),
+                    "location": event.get("location", ""),
+                    "description": event.get("description", "Scheduled by EVO MK2"),
+                    "start": {"dateTime": start_iso},
+                    "end": {"dateTime": end_iso},
+                    "attendees": [{"email": a} for a in event.get("attendees", [])],
+                }
+                res = self._gcal_service.events().insert(calendarId="primary", body=body).execute()
+                self.audit.log_action(action, v, {"ok": True, "gcal_id": res.get("id")})
+                return MoralVerdict.safe(f"Event '{event.get('title')}' pushed to Google Calendar (ID: {res.get('id')}).", action={"gcal_id": res.get("id")})
+            except Exception as exc:
+                log.warning("Failed pushing event to Google Calendar API: %s", exc)
+                return MoralVerdict.caution(f"Failed to push to Google Calendar: {exc}")
+
+        # Local fallback record
+        eid = self.add_event(event.get("title", "Event"), event.get("start_ts", time.time()), event.get("end_ts", time.time() + 3600), event.get("attendees", []), event.get("location", ""))
+        self.audit.log_action(action, v, {"ok": True, "local_id": eid})
+        return MoralVerdict.safe(f"Event '{event.get('title')}' scheduled in local calendar.", action={"local_id": eid})
 
     def add_event(self, title: str, start_ts: float, end_ts: float, attendees: list[str] | None = None, location: str = "") -> str:
         eid = f"ev_{int(start_ts)}_{str(uuid.uuid4())[:6]}"

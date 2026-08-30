@@ -1,4 +1,4 @@
-"""The Master JARVIS Brain for EVO MK2 (JARVIS Phase 10)."""
+"""The Master JARVIS Brain for EVO MK2 (JARVIS Phase 10 / Task 7 & 10)."""
 from __future__ import annotations
 
 import logging
@@ -12,6 +12,7 @@ from .consent import get_consent_manager
 from .email_agent import get_email_agent
 from .ethics import get_moral_engine
 from .knowledge_agent import get_knowledge_agent
+from .llm_rate_limiter import get_llm_rate_limiter
 from .money_engine import get_money_engine
 from .research_agent import get_research_agent
 from .schedule_agent import get_schedule_agent
@@ -42,6 +43,7 @@ class JarvisAgent:
         self.wellness = get_wellness_agent()
         self.money = get_money_engine()
         self.synthesis = get_synthesis_engine()
+        self.rate_limiter = get_llm_rate_limiter()
 
         self.last_tick_ts = 0.0
         self.proactive_alerts: list[str] = []
@@ -71,6 +73,14 @@ class JarvisAgent:
                 time.sleep(2)
                 slept += 2
 
+    def _check_research_topics(self) -> list[str]:
+        """Check if any monitored topics have fresh developments (Task 7)."""
+        try:
+            return self.research.check_monitored_topics()
+        except Exception as exc:
+            log.debug("Research topic check error: %s", exc)
+            return []
+
     def tick(self) -> dict[str, Any]:
         self.last_tick_ts = time.time()
         findings: list[str] = []
@@ -78,16 +88,31 @@ class JarvisAgent:
         # 1. Calendar & Pre-meeting Prep
         upcoming = self.schedule.get_upcoming_events(hours=2)
         if upcoming:
-            prep = self.schedule.pre_meeting_prep(upcoming[0])
-            if prep.get("prep_ready"):
-                findings.append(f"Meeting prep ready for '{upcoming[0].get('title')}'")
+            if self.rate_limiter.allow():
+                prep = self.schedule.pre_meeting_prep(upcoming[0])
+                if prep.get("prep_ready"):
+                    findings.append(f"Meeting prep ready for '{upcoming[0].get('title')}'")
 
         # 2. Wellness check
         w_res = self.wellness.suggest_break()
         if w_res.verdict == "caution":
             findings.append(w_res.reasoning)
 
-        # 3. Money scan
+        # 3. Research topic developments (Task 7)
+        r_alerts = self._check_research_topics()
+        if r_alerts:
+            findings.extend(r_alerts)
+
+        # 4. Proactive cross-domain suggestion (Task 8)
+        if self.rate_limiter.allow():
+            try:
+                sugg = self.synthesis.proactive_suggestion()
+                if sugg:
+                    findings.append(f"JARVIS Suggestion: {sugg}")
+            except Exception as exc:
+                log.debug("Proactive suggestion error: %s", exc)
+
+        # 5. Money scan
         if self.consent.has_consent("autonomy_execute"):
             m_res = self.money.tick()
             if m_res.get("enqueued_id"):

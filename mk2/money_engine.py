@@ -95,6 +95,11 @@ class MoneyEngine:
             return {"ok": True, "opportunities_found": len(opps), "safe": 0}
 
         # 3. Strategic LLM Ranking
+        from .llm_rate_limiter import get_llm_rate_limiter
+        if not get_llm_rate_limiter().allow():
+            log.warning("MoneyEngine tick skipped LLM ranking due to rate limit.")
+            return {"ok": True, "skipped": "rate_limited"}
+
         best = self.pick_best_opportunity(safe_opps)
         if not best:
             return {"ok": True, "picked": None}

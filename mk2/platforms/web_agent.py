@@ -64,6 +64,11 @@ class WebAgent:
                 'Return ONLY JSON: {"action": "click"|"type"|"wait"|"finish", "selector": "<css_selector_or_text>", "value": "<text_to_type_if_any>", "reason": "<why>"}'
             )
 
+            from ..llm_rate_limiter import get_llm_rate_limiter
+            if not get_llm_rate_limiter().allow():
+                log.warning("WebAgent interaction loop paused: rate limit active.")
+                break
+
             try:
                 plan_raw = llm.chat([
                     {"role": "system", "content": "You are a precise web automation planner."},
