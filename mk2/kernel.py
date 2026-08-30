@@ -1,8 +1,9 @@
-﻿"""Kernel: owns the loop, supervises subsystems, restarts on death."""
+"""Kernel: owns the loop, supervises subsystems, restarts on death."""
 import asyncio
 import logging
 import os
 import threading
+import sys
 
 from . import db, llm, tools
 from .bus import bus
@@ -15,6 +16,14 @@ _loop: asyncio.AbstractEventLoop | None = None
 
 
 def _supervise(name: str, factory) -> asyncio.Task:
+    try:
+        from . import _watchdog
+        wd = _watchdog.get_watchdog()
+        if wd:
+            return wd.register(name, factory)
+    except Exception:
+        pass
+
     async def runner() -> None:
         while True:
             try:
@@ -23,15 +32,37 @@ def _supervise(name: str, factory) -> asyncio.Task:
                 return
             except Exception as exc:  # noqa: BLE001
                 _restarts[name] = _restarts.get(name, 0) + 1
+                count = _restarts[name]
                 log.warning("subsystem %s died (%s) - restart #%d",
-                            name, exc, _restarts[name])
+                            name, exc, count)
                 try:
                     from . import errlog
 
                     errlog.log_error(f"subsystem:{name}", str(exc))
                 except Exception:
                     pass
-                await asyncio.sleep(min(2 * max(1, _restarts[name]), 10))
+                if count >= 5:
+                    log.error(
+                        "subsystem %s crashed %d times -- entering graceful degradation",
+                        name, count,
+                    )
+                    try:
+                        from . import errlog
+
+                        errlog.log_error(
+                            f"subsystem:{name}:degraded",
+                            f"graceful degradation active after {count} crashes",
+                        )
+                    except Exception:
+                        pass
+                    bus.publish("system.degraded", {
+                        "subsystem": name,
+                        "crashes": count,
+                        "status": "degraded",
+                    })
+                    await asyncio.sleep(300)
+                    continue
+                await asyncio.sleep(min(2 * max(1, count), 10))
 
     task = _loop.create_task(runner(), name=name)
     _tasks[name] = task
@@ -70,15 +101,49 @@ def main(voice: bool = True) -> None:
     n_skills = skills.load_all()
     if n_skills:
         log.info("re-armed %d learned skill(s)", n_skills)
-    try:  # pre-load the local Piper JARVIS voice (first reply pays no load tax)
+    try:  # pre-load the local Piper JARVIS voice and warm voice model
         from .voice import tts as _tts
-
         _tts.warm_piper()
+        if os.environ.get("EVO_VOICE", "1") == "1":
+            from . import llm
+
+            def _warm():
+                try:
+                    llm.chat([{"role": "user", "content": "ping"}], role="voice", timeout=5, max_providers=1)
+                except Exception:
+                    pass
+
+            threading.Thread(target=_warm, daemon=True, name="warm-voice-model").start()
     except Exception:
         pass
     _loop = asyncio.new_event_loop()
     asyncio.set_event_loop(_loop)
     bus.attach_loop(_loop)
+
+    from . import _watchdog
+
+    wd = _watchdog.init_watchdog(_loop)
+    _loop.create_task(wd.start(), name="watchdog-main")
+
+    def _journal_callback(topic: str, payload: dict) -> None:
+        if not topic.startswith("system.health"):
+            db.record_event(topic, payload)
+
+    bus.subscribe("*", _journal_callback)
+
+    import atexit
+    atexit.register(db.set_last_shutdown_ts)
+
+    # Event replay for crash recovery
+    last_shutdown = db.get_last_shutdown_ts()
+    if last_shutdown > 0:
+        replayed = db.replay_events(last_shutdown)
+        if replayed:
+            log.info("Replaying %d journaled event(s) since last shutdown", len(replayed))
+            for ev in replayed:
+                topic = ev.get("topic", "")
+                if not topic.startswith("system.") and not topic.startswith("heartbeat"):
+                    bus.publish(topic, ev.get("payload", {}))
 
     _supervise("server", _server_subsystem)
 
@@ -113,6 +178,12 @@ def main(voice: bool = True) -> None:
         from . import push_notify
 
         push_notify.start_bridge()
+
+    try:
+        from . import notifications
+        notifications.start_notification_bridge()
+    except Exception:
+        pass
 
     async def _reminder_tick() -> None:
         from . import reminders
@@ -261,6 +332,28 @@ def main(voice: bool = True) -> None:
     if os.environ.get("EVO_AWARENESS", "1") == "1":
         _supervise("awareness", _awareness_loop)
 
+    if os.environ.get("EVO_PERCEPTION", "1") == "1":
+        try:
+            from . import perception
+            perception.start_perception_loop(interval=5.0)
+        except Exception:
+            pass
+
+    async def _autonomy_subsystem() -> None:
+        from . import autonomy
+        from .jarvis_agent import get_jarvis_agent
+        from .money_engine import get_money_engine
+        loop_obj = autonomy.get_autonomy_loop()
+        loop_obj.start()
+        money_obj = get_money_engine()
+        money_obj.start()
+        jarvis_obj = get_jarvis_agent()
+        jarvis_obj.start()
+        while True:
+            await asyncio.sleep(60)
+
+    _supervise("autonomy", _autonomy_subsystem)
+
     if voice and os.environ.get("EVO_WAKE", "0") == "1":
         _supervise("voice", _voice_subsystem)
     elif not voice:
@@ -288,6 +381,29 @@ def main(voice: bool = True) -> None:
 
         _supervise("model-warmer", _warmer)
 
+    async def _resource_monitor() -> None:
+        """Periodic 60s health check: memory usage, thread count, disk space."""
+        import shutil
+        while True:
+            try:
+                threads = threading.active_count()
+                if threads > 100:
+                    log.warning("High thread count: %d threads active", threads)
+                    bus.publish("system.alert", {"type": "thread_count", "count": threads})
+                try:
+                    usage = shutil.disk_usage(config.DATA)
+                    free_gb = usage.free / (1024 ** 3)
+                    if free_gb < 1.0:
+                        log.warning("Low disk space: %.2f GB remaining", free_gb)
+                        bus.publish("system.alert", {"type": "disk_space", "free_gb": free_gb})
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            await asyncio.sleep(60)
+
+    _supervise("resourcemonitor", _resource_monitor)
+
     log.info("EVO MK2 kernel online: http://%s:%d", settings.host, settings.port)
     try:
         from .voice import webrtc_v2
@@ -295,6 +411,13 @@ def main(voice: bool = True) -> None:
         log.info(webrtc_v2.boot_line())
     except Exception:
         pass
+
+    if "--tray" in sys.argv or (os.environ.get("EVO_TRAY", "1") == "1" and "--service" not in sys.argv):
+        try:
+            from . import tray_icon
+            tray_icon.launch_tray_in_background(on_exit=lambda: _loop.call_soon_threadsafe(_loop.stop))
+        except Exception:
+            pass
     try:
         _loop.run_forever()
     except KeyboardInterrupt:
@@ -305,3 +428,9 @@ def main(voice: bool = True) -> None:
         for t in _tasks.values():
             t.cancel()
         _loop.close()
+
+
+boot = main
+
+if __name__ == "__main__":
+    main()

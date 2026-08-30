@@ -116,3 +116,12 @@ class Bus:
 
 
 bus = Bus()
+
+
+def publish(topic: str, payload: dict | None = None) -> Event:
+    return bus.publish(topic, payload)
+
+
+def subscribe(pattern: str, callback: Callable[[Event], None] | None = None) -> Subscription:
+    return bus.subscribe(pattern, callback)
+

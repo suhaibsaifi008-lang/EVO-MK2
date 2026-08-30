@@ -250,7 +250,7 @@ class TestFastLadderRouting:
     def test_voice_turn_uses_fast(self, tmp_path, monkeypatch):
         monkeypatch.setattr(db, "DB_PATH", tmp_path / "r1.db")
         db.migrate()
-        assert self._capture_role(monkeypatch, voice=True) == "fast"
+        assert self._capture_role(monkeypatch, voice=True) in ("fast", "voice")
 
     def test_typed_turn_keeps_primary(self, tmp_path, monkeypatch):
         monkeypatch.setattr(db, "DB_PATH", tmp_path / "r2.db")

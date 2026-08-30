@@ -1,4 +1,5 @@
-﻿"""SQLite persistence. One file = one assistant. Migrations are idempotent."""
+"""SQLite persistence. One file = one assistant. Migrations are idempotent."""
+import json
 import sqlite3
 import threading
 import time
@@ -76,7 +77,6 @@ CREATE TABLE IF NOT EXISTS vec_chunks (
     ts REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_source ON vec_chunks(source);
-CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(ts DESC);
 CREATE TABLE IF NOT EXISTS triples (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     subject TEXT NOT NULL,
@@ -85,6 +85,15 @@ CREATE TABLE IF NOT EXISTS triples (
     src TEXT DEFAULT 'inferred',
     ts REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS anecdotes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    narrative TEXT NOT NULL,
+    emotion TEXT,
+    created_at REAL NOT NULL,
+    referenced_count INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_anecdotes_emotion ON anecdotes(emotion);
 CREATE TABLE IF NOT EXISTS proposals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     kind TEXT NOT NULL,
@@ -102,6 +111,13 @@ CREATE TABLE IF NOT EXISTS expenses (
     source TEXT DEFAULT '',
     ts REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_events_topic ON events(topic);
 CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(spent_on);
 CREATE INDEX IF NOT EXISTS idx_traces_turn ON traces(turn_id);
 """
@@ -377,3 +393,143 @@ def proposal_set_status(pid: int, status: str) -> bool:
         cur = c.execute("UPDATE proposals SET status=? WHERE id=?",
                         (status, int(pid)))
         return cur.rowcount > 0
+
+
+def record_event(topic: str, payload: dict | str) -> None:
+    """Journal an event into SQLite for diagnostics and crash recovery."""
+    payload_str = payload if isinstance(payload, str) else json.dumps(payload)
+    try:
+        with _lock, connect() as c:
+            c.execute(
+                "INSERT INTO events(topic, payload, created_at) VALUES(?, ?, ?)",
+                (topic, payload_str, time.time())
+            )
+    except Exception:
+        pass
+
+
+def get_recent_events(limit: int = 50, topic: str = "") -> list[dict]:
+    """Retrieve recent journaled events."""
+    try:
+        with _lock, connect() as c:
+            if topic:
+                rows = c.execute(
+                    "SELECT id, topic, payload, created_at FROM events WHERE topic=? ORDER BY id DESC LIMIT ?",
+                    (topic, limit)
+                ).fetchall()
+            else:
+                rows = c.execute(
+                    "SELECT id, topic, payload, created_at FROM events ORDER BY id DESC LIMIT ?",
+                    (limit,)
+                ).fetchall()
+            return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
+def replay_events(since_ts: float, limit: int = 200) -> list[dict]:
+    """Replay events occurred since a given timestamp for crash recovery."""
+    try:
+        with _lock, connect() as c:
+            rows = c.execute(
+                "SELECT id, topic, payload, created_at FROM events WHERE created_at >= ? ORDER BY created_at ASC LIMIT ?",
+                (float(since_ts), limit)
+            ).fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                try:
+                    d["payload"] = json.loads(d["payload"])
+                except Exception:
+                    pass
+                out.append(d)
+            return out
+    except Exception:
+        return []
+
+
+def get_last_shutdown_ts() -> float:
+    """Retrieve last recorded shutdown timestamp for replay recovery."""
+    try:
+        with _lock, connect() as c:
+            row = c.execute("SELECT val FROM kv WHERE key='system:last_shutdown'").fetchone()
+            if row:
+                return float(row["val"])
+    except Exception:
+        pass
+    return 0.0
+
+
+def set_last_shutdown_ts(ts: float | None = None) -> None:
+    """Record current shutdown timestamp for replay on next start."""
+    if ts is None:
+        ts = time.time()
+    try:
+        with _lock, connect() as c:
+            c.execute(
+                "INSERT INTO kv(key, val, updated_at) VALUES('system:last_shutdown', ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET val=excluded.val, updated_at=excluded.updated_at",
+                (str(float(ts)), time.time())
+            )
+    except Exception:
+        pass
+
+
+def save_anecdote(name: str, narrative: str, emotion: str = "general") -> int:
+    """Save a named memorable moment or anecdote for personality depth."""
+    try:
+        with _lock, connect() as c:
+            cur = c.execute(
+                "INSERT INTO anecdotes (name, narrative, emotion, created_at, referenced_count) VALUES (?, ?, ?, ?, 0)",
+                (name, narrative, emotion, time.time()),
+            )
+            return cur.lastrowid
+    except Exception:
+        return 0
+
+
+def anecdotes_by_emotion(emotion: str, limit: int = 5) -> list[dict]:
+    """Retrieve recent anecdotes filtered by emotion (e.g. 'funny', 'proud')."""
+    try:
+        with _lock, connect() as c:
+            cur = c.execute(
+                "SELECT id, name, narrative, emotion, created_at, referenced_count FROM anecdotes WHERE emotion = ? ORDER BY created_at DESC LIMIT ?",
+                (emotion, limit),
+            )
+            return [dict(r) for r in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def all_anecdotes(limit: int = 20) -> list[dict]:
+    """Retrieve all recent anecdotes."""
+    try:
+        with _lock, connect() as c:
+            cur = c.execute(
+                "SELECT id, name, narrative, emotion, created_at, referenced_count FROM anecdotes ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def import_messages(messages_list: list[dict]) -> int:
+    """Bulk import messages for cross-device state sync."""
+    imported = 0
+    try:
+        with _lock, connect() as c:
+            for m in messages_list:
+                role = m.get("role", "user")
+                content = m.get("content", "")
+                surface = m.get("surface", "sync")
+                ts = m.get("ts", time.time())
+                if content:
+                    c.execute(
+                        "INSERT INTO messages (role, content, surface, ts) VALUES (?, ?, ?, ?)",
+                        (role, content, surface, ts),
+                    )
+                    imported += 1
+    except Exception:
+        pass
+    return imported

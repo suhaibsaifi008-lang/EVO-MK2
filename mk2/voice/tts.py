@@ -44,11 +44,31 @@ def sanitize_speech(text: str) -> str:
     return re.sub(r"[ \t]{2,}", " ", t).replace("\n\n\n", "\n\n").strip()
 
 
-def _edge_voice() -> str:
+def select_voice(formality: int | None = None, preference: str = "") -> str:
     import os
+    env_voice = os.environ.get("EVO_TTS_VOICE", "").strip()
+    if env_voice:
+        return env_voice
+    if preference:
+        for v in CURATED_VOICES:
+            if preference.lower() in v.lower():
+                return v
+    if formality is None:
+        try:
+            from ..persona_loader import get_persona_state
+            ps = get_persona_state()
+            formality = getattr(ps, "formality", 60)
+        except Exception:
+            formality = 60
+    if formality > 75:
+        return "en-GB-RyanNeural"
+    elif formality < 40:
+        return "en-US-BrianMultilingualNeural"
+    return "en-US-AndrewMultilingualNeural"
 
-    return (os.environ.get("EVO_TTS_VOICE", "").strip()
-            or "en-US-AndrewMultilingualNeural")
+
+def _edge_voice() -> str:
+    return select_voice()
 
 
 def _edge_rate() -> str:
@@ -119,6 +139,64 @@ def _sapi_wav(text: str) -> Path | None:
         return out
     except Exception:
         return None
+
+
+def _elevenlabs_mp3(text: str, stop: threading.Event) -> Path | None:
+    api_key = os.environ.get("ELEVENLABS_API_KEY", "").strip()
+    if not api_key:
+        return None
+    voice_id = os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM").strip()
+    key_src = "el:" + voice_id + ":" + text
+    key = hashlib.sha1(key_src.encode()).hexdigest()[:20] + ".mp3"
+    out = TTS_DIR / key
+    if out.exists() and out.stat().st_size > 512:
+        return out
+
+    try:
+        from ..persona_loader import get_persona_state
+        ps = get_persona_state()
+        mood = getattr(ps, "mood", "focused")
+    except Exception:
+        mood = "focused"
+
+    stability = 0.55
+    similarity = 0.75
+    if mood == "concerned":
+        stability = 0.70
+    elif mood == "enthusiastic":
+        stability = 0.35
+        similarity = 0.85
+
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+    headers = {
+        "xi-api-key": api_key,
+        "Content-Type": "application/json",
+        "Accept": "audio/mpeg",
+    }
+    payload = {
+        "text": text[:1000],
+        "model_id": "eleven_monolingual_v1",
+        "voice_settings": {
+            "stability": stability,
+            "similarity_boost": similarity,
+        },
+    }
+    try:
+        import json
+        import urllib.request
+        req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers)
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            data = resp.read()
+            if stop.is_set():
+                return None
+            tmp = out.with_suffix(".part")
+            tmp.write_bytes(data)
+            if tmp.exists() and tmp.stat().st_size > 256:
+                tmp.replace(out)
+                return out
+    except Exception as exc:
+        log.debug("ElevenLabs synthesis skipped/failed: %s", exc)
+    return None
 
 
 def _edge_mp3(text: str, stop: threading.Event) -> Path | None:
@@ -306,12 +384,14 @@ class Speaker:
         alias = f"mk2{self._n}{int(time.time()*1000)%100000}"
         engine = os.environ.get("EVO_TTS_ENGINE", "auto")
         path = None
-        if engine in ("auto", "piper") and not stop.is_set():
+        if engine in ("auto", "elevenlabs") and not stop.is_set():
+            path = _elevenlabs_mp3(text, stop)
+        if path is None and engine in ("auto", "piper") and not stop.is_set():
             path = _piper_wav(text)
-        if path is None and engine in ("auto", "sapi") and len(text) <= 90:
-            path = _sapi_wav(text)
         if path is None and engine in ("auto", "edge") and not stop.is_set():
             path = _edge_mp3(text, stop)
+        if path is None and engine in ("auto", "sapi"):
+            path = _sapi_wav(text)
         if path is None:
             return
         ext = path.suffix.lower()

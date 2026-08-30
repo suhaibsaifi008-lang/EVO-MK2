@@ -1,4 +1,4 @@
-﻿"""System tools: apps, shell (permissioned), volume, screenshot, screen read."""
+"""System tools: apps, shell (permissioned), volume, screenshot, screen read."""
 import os
 import shutil
 from pathlib import Path
@@ -6,17 +6,32 @@ from pathlib import Path
 from .. import db as _db
 from . import tool
 import subprocess
+import threading
+import time
 
 
 def _run_ps(script: str, timeout: int = 15) -> str:
-    r = subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-        capture_output=True, text=True, timeout=timeout,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-    if r.returncode != 0:
-        raise RuntimeError(r.stderr.strip()[:200] or "powershell failed")
-    return (r.stdout or "").strip()
+    for attempt in range(2):
+        try:
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, timeout=timeout,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if r.returncode != 0:
+                raise RuntimeError(r.stderr.strip()[:200] or "powershell failed")
+            return (r.stdout or "").strip()
+        except subprocess.TimeoutExpired:
+            if attempt == 0:
+                time.sleep(0.5)
+                continue
+            raise RuntimeError(f"PowerShell command timed out after {timeout}s")
+        except Exception:
+            if attempt == 0:
+                time.sleep(0.5)
+                continue
+            raise
+    return ""
 
 
 APP_ALIASES = {
@@ -202,6 +217,10 @@ def close_app(target: str) -> dict:
 @tool("shell_run", "Run a PowerShell command and return its output.",
       {"command": {"type": "string"}, "timeout": {"type": "integer"}}, permission="execute")
 def shell_run(command: str, timeout: int = 20) -> dict:
+    cmd_low = (command or "").lower()
+    destructive = ("format ", "rmdir /s /q c:", "del /f /s /q c:", "shutdown -s", "restart-computer")
+    if any(d in cmd_low for d in destructive):
+        return {"ok": False, "speech": "Command blocked: destructive system command detected.", "data": {}}
     out = _run_ps(command, timeout=max(5, min(int(timeout), 120)))
     return {"ok": True, "speech": out[:300] or "(no output)", "data": {"output": out[:4000]}}
 
@@ -256,4 +275,77 @@ def web_search(query: str) -> dict:
     return {"ok": True, "speech": f"Found: {speech}",
             "data": {"results": rows,
                      "excerpt": excerpt or "(pages unreadable)"}}
+
+
+_clipboard_ring: list[dict] = []
+_clip_lock = threading.Lock()
+
+
+def _push_clip(text: str) -> None:
+    if not text:
+        return
+    with _clip_lock:
+        if not _clipboard_ring or _clipboard_ring[-1]["text"] != text:
+            _clipboard_ring.append({"text": text, "ts": time.time()})
+            if len(_clipboard_ring) > 50:
+                del _clipboard_ring[0]
+
+
+@tool("clipboard_set", "Copy text to the clipboard and record to history.",
+      {"text": {"type": "string"}}, permission="execute")
+def clipboard_set(text: str = "") -> dict:
+    try:
+        import pyperclip
+        pyperclip.copy(text)
+        _push_clip(text)
+        return {"ok": True, "speech": f"Copied {len(text)} characters.", "data": {"length": len(text)}}
+    except ImportError:
+        try:
+            escaped = text.replace("'", "''")
+            _run_ps(f"Set-Clipboard -Value '{escaped}'")
+            _push_clip(text)
+            return {"ok": True, "speech": f"Copied {len(text)} characters.", "data": {"length": len(text)}}
+        except Exception as exc:
+            return {"ok": False, "speech": f"Could not set clipboard: {exc}", "data": {}}
+
+
+@tool("clipboard_history", "Read recent clipboard history (last 50 items).",
+      {"limit": {"type": "integer", "default": 10}}, permission="read")
+def clipboard_history(limit: int = 10) -> dict:
+    try:
+        import pyperclip
+        cur = pyperclip.paste()
+        if cur:
+            _push_clip(cur)
+    except Exception:
+        pass
+    with _clip_lock:
+        items = list(reversed(_clipboard_ring))[:max(1, limit)]
+    if not items:
+        return {"ok": True, "speech": "Clipboard history is empty.", "data": {"items": []}}
+    speech = f"{len(items)} items in clipboard history. Most recent: {items[0]['text'][:80]}"
+    return {"ok": True, "speech": speech, "data": {"items": [it["text"][:300] for it in items]}}
+
+
+@tool("clipboard_recall", "Recall an item from clipboard history by index (0=latest) or search query.",
+      {"query": {"type": "string", "description": "Index number or search query"}}, permission="execute")
+def clipboard_recall(query: str = "") -> dict:
+    with _clip_lock:
+        if not _clipboard_ring:
+            return {"ok": False, "speech": "Clipboard history is empty.", "data": {}}
+        target = None
+        try:
+            idx = int(str(query).strip())
+            items = list(reversed(_clipboard_ring))
+            if 0 <= idx < len(items):
+                target = items[idx]["text"]
+        except ValueError:
+            q = str(query).lower()
+            for it in reversed(_clipboard_ring):
+                if q in it["text"].lower():
+                    target = it["text"]
+                    break
+    if not target:
+        return {"ok": False, "speech": f"No clipboard item matching '{query}' found.", "data": {}}
+    return clipboard_set(target)
 

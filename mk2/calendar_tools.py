@@ -8,9 +8,16 @@ from .tools import tool
 
 
 def _fetch_ics() -> str:
+    from . import config
+    local_ics = config.DATA / "calendar.ics"
+    if local_ics.exists():
+        try:
+            return local_ics.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            pass
     url = db.get_setting("calendar_ical_url", "").strip()
     if not url:
-        raise RuntimeError("No calendar URL set (Settings → calendar_ical_url).")
+        raise RuntimeError("No calendar URL set and no data/calendar.ics found.")
     req = urllib.request.Request(url, headers={"User-Agent": "EVO-MK2"})
     with urllib.request.urlopen(req, timeout=20) as resp:
         return resp.read().decode("utf-8", "ignore")

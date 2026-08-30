@@ -13,6 +13,11 @@ import urllib.request
 from . import db
 from .tools import tool
 
+try:
+    from . import voiceprint
+except Exception:
+    voiceprint = None
+
 SUSPICIOUS_TLDS = {"zip", "mov", "tk", "ml", "ga", "cf", "gq", "top", "xyz",
                    "click", "country", "work", "link"}
 BRANDS = ("google", "amazon", "netflix", "paypal", "microsoft", "apple",

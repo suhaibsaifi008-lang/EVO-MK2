@@ -1,22 +1,22 @@
 """Voice v2: the fast Pipecat voice channel, embedded in the MK2 kernel.
 
 Browser mic -> SmallWebRTC -> Silero VAD -> faster-whisper small.en
--> FreeLLMAPI (fastest-stable route, speed over depth) -> Kokoro TTS
+-> FreeLLMAPI (primary model, not fast) -> Kokoro TTS
 -> WebRTC speakers.
 
 Unlike the old wake-word gateway this runs INSIDE the console server, on the
 same port and in the same process as everything else:
 
-    python run.py    ->  console  http://127.0.0.1:8421/
-                         voice    http://127.0.0.1:8421/voice/client/
+ python run.py -> console http://127.0.0.1:8421/
+ voice http://127.0.0.1:8421/voice/client/
 
 Integration points with the MK2 brain:
-- persona_block() + truth_law() shape every system prompt,
+- persona_block() + truth_law() shape every ,
 - curated tool subset executed through the audited tools registry
-  (env EVO_VOICE_TOOLS overrides the list),
+ (env EVO_VOICE_TOOLS overrides the list),
 - every completed turn flows through memory.record_turn(surface="voice")
-  so facts/style-feedback/episodic memory stay in sync, and onto the event
-  bus as "voice.turn" so the console can follow the conversation live.
+ so facts/style-feedback/episodic memory stay in sync, and onto the event
+ bus as "voice.turn" so the console can follow the conversation live.
 
 The direct LLM call (bypassing brain.handle_turn) is deliberate: voice needs
 first-token latency over orchestration depth; measured TTFT floor is the
@@ -32,17 +32,17 @@ from fastapi import HTTPException
 from .. import config
 
 _state = {
-    "available": False,   # pipecat + aiortc importable
-    "enabled": False,     # registered on the running app
+    "available": False, # pipecat + aiortc importable
+    "enabled": False, # registered on the running app
     "error": "",
-    "sessions": set(),    # active session ids
+    "sessions": set(), # active session ids
 }
 _lock = threading.Lock()
 
 CLIENT_PATH = "/voice/client/"
 
 DEFAULT_TOOLS = ("web_search", "deep_thought", "task_start",
-                 "reminder_add_tool", "youtube_summarize", "docs_create")
+    "reminder_add_tool", "youtube_summarize", "docs_create")
 
 
 def _tool_names() -> tuple[str, ...]:
@@ -54,27 +54,55 @@ def _tool_names() -> tuple[str, ...]:
 def status() -> dict:
     with _lock:
         return {"available": _state["available"],
-                "enabled": _state["enabled"],
-                "client_url": CLIENT_PATH if _state["enabled"] else "",
-                "active_sessions": len(_state["sessions"]),
-                "error": _state["error"]}
+            "enabled": _state["enabled"],
+            "client_url": CLIENT_PATH if _state["enabled"] else "",
+            "active_sessions": len(_state["sessions"]),
+            "error": _state["error"]}
 
 
-# --------------------------------------------------------------------------
+# ----------------------------------------------------------------------
 # LLM plumbing (persona + truth law + audited tools)
-# --------------------------------------------------------------------------
+# ----------------------------------------------------------------------
 
 def system_instruction() -> str:
     from ..persona_loader import ensure_persona, persona_block, truth_law
+    from .. import db, vault as vault_mod
 
     ensure_persona()
     tool_lines = "\n".join(f"- {n}" for n in _tool_names())
+
+    # Build memory context from stored facts, vault notes, and standing rules
+    try:
+        facts = db.all_facts(18)
+    except Exception:
+        facts = []
+    try:
+        notes = vault_mod.list_notes()[:12]
+    except Exception:
+        notes = []
+    try:
+        rule_facts = [v for k, v in db.all_facts(40).items() if k.startswith("rule:")]
+    except Exception:
+        rule_facts = []
+
+    memory_ctx = ""
+    if facts:
+        memory_ctx += "USER FACTS:\n" + "\n".join(f"- {f}" for f in facts) + "\n"
+    if notes:
+        memory_ctx += "NOTES:\n" + "\n".join(f"- {n}" for n in notes) + "\n"
+    if rule_facts:
+        memory_ctx += "RULES:\n" + "\n".join(f"- {r}" for r in rule_facts) + "\n"
+
     return (
         persona_block(max_chars=700)
+        + "\n" + memory_ctx
         + "\n" + truth_law()
-        + "\nYou are speaking aloud on a phone-like voice channel. Keep "
-        "replies SHORT (1-4 sentences), natural spoken language, no lists, "
-        "no markdown, no emojis. You can call these tools when needed:\n"
+        + "\nYou are on a voice channel. Keep replies SHORT (1-4 sentences), "
+            "natural spoken language, no lists, no markdown, no emojis. "
+            "NEVER say 'As an AI' or mention internal steps, tool names, or providers. "
+            "Sound like a real person talking on a phone call. "
+            "If you mention options or points, list them right there - never announce a list without listing it. "
+            "You can call these tools when needed:\n"
         + tool_lines
     )
 
@@ -84,7 +112,7 @@ def _tool_fn(name: str):
         try:
             result = await asyncio.to_thread(_call_tool_checked, name, kwargs)
             return str(result.get("speech", ""))[:900]
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc: # noqa: BLE001
             return f"Tool failed: {str(exc)[:150]}"
     _fn.__name__ = name
     _fn.__doc__ = name
@@ -101,9 +129,9 @@ def _call_tool_checked(name: str, kwargs: dict) -> dict:
     return tools.call(name, kwargs)
 
 
-# --------------------------------------------------------------------------
+# ----------------------------------------------------------------------
 # Turn recorder: voice turns -> MK2 memory + event bus
-# --------------------------------------------------------------------------
+# ----------------------------------------------------------------------
 
 class TurnRecorder:
     """Buffers one user/assistant exchange and flushes it to memory+bus.
@@ -174,7 +202,7 @@ def _record_turn_safe(user: str, reply: str, surface: str) -> None:
 def _make_pipecat_recorder():
     """FrameProcessor capturing Transcription/Text frames via TurnRecorder."""
     from pipecat.frames.frames import (EndFrame, StartInterruptionFrame,
-                                       TextFrame, TranscriptionFrame)
+        TextFrame, TranscriptionFrame)
     from pipecat.processors.frame_processor import FrameProcessor
 
     class _Recorder(FrameProcessor):
@@ -195,9 +223,9 @@ def _make_pipecat_recorder():
     return _Recorder
 
 
-# --------------------------------------------------------------------------
+# ----------------------------------------------------------------------
 # Pipeline
-# --------------------------------------------------------------------------
+# ----------------------------------------------------------------------
 
 def _transport_params():
     from pipecat.transports.base_transport import TransportParams
@@ -224,7 +252,8 @@ async def run_pipeline(transport) -> None:
 
     whisper_model = os.environ.get("EVO_STT_MODEL", "small.en")
     tts_voice = os.environ.get("EVO_TTS_VOICE", "af_heart")
-    llm_model = os.environ.get("EVO_VOICE_LLM_MODEL", "qwen3.6-27b")
+    # Use the PRIMARY model for voice - smarter, not just fast
+    llm_model = settings.openai_model
 
     stt = WhisperSTTService(model=whisper_model, compute_type="int8")
     tts = KokoroTTSService(settings=KokoroTTSService.Settings(voice=tts_voice))
@@ -257,11 +286,11 @@ async def run_pipeline(transport) -> None:
     task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True))
 
     @transport.event_handler("on_client_connected")
-    async def _connected(transport, client):  # noqa: ANN001
+    async def _connected(transport, client): # noqa: ANN001
         print("[voice-v2] client connected", flush=True)
 
     @transport.event_handler("on_client_disconnected")
-    async def _disconnected(transport, client):  # noqa: ANN001
+    async def _disconnected(transport, client): # noqa: ANN001
         print("[voice-v2] client disconnected", flush=True)
         recorder.rec.flush()
         await task.cancel()
@@ -293,7 +322,7 @@ async def _run_session(connection, body: dict, session_id: str) -> None:
         transport = SmallWebRTCTransport(
             webrtc_connection=connection, params=_transport_params())
         await run_pipeline(transport)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc: # noqa: BLE001
         _state["error"] = str(exc)[:200]
         print(f"[voice-v2] pipeline error: {exc}", flush=True)
     finally:
@@ -301,9 +330,9 @@ async def _run_session(connection, body: dict, session_id: str) -> None:
             _state["sessions"].discard(session_id)
 
 
-# --------------------------------------------------------------------------
+# ----------------------------------------------------------------------
 # FastAPI wiring
-# --------------------------------------------------------------------------
+# ----------------------------------------------------------------------
 
 def register(app) -> dict:
     """Mount voice v2 on the console app. Heavy imports stay lazy so tests
@@ -319,23 +348,23 @@ def register(app) -> dict:
         )
 
         available = True
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc: # noqa: BLE001
         with _lock:
             _state.update(available=False,
-                          error=f"pipecat webrtc extras missing: {exc}"[:200])
+                error=f"pipecat webrtc extras missing: {exc}"[:200])
         return status()
 
-    handler = SmallWebRTCRequestHandler()  # MULTIPLE mode: tab refresh safe
+    handler = SmallWebRTCRequestHandler() # MULTIPLE mode: tab refresh safe
 
     @app.post("/start")
     async def voice_start(request: dict):
         """Prebuilt-client handshake (mirrors pipecat runner contract)."""
         if (request or {}).get("transport", "webrtc") != "webrtc":
             raise HTTPException(status_code=400,
-                                detail="only the 'webrtc' transport is supported")
+                detail="only the 'webrtc' transport is supported")
         session_id = str(uuid.uuid4())
         result = {"status": "ready", "sessionId": session_id,
-                  "transports": ["webrtc"]}
+            "transports": ["webrtc"]}
         if (request or {}).get("enableDefaultIceServers"):
             result["iceConfig"] = {"iceServers": [
                 {"urls": ["stun:stun.l.google.com:19302"]}]}
@@ -365,8 +394,8 @@ def register(app) -> dict:
             IceCandidate, SmallWebRTCPatchRequest)
 
         req = SmallWebRTCPatchRequest(pc_id=patch.get("pc_id", ""),
-                                      candidates=[IceCandidate(**c) for c in
-                                                  patch.get("candidates", [])])
+            candidates=[IceCandidate(**c) for c in
+                patch.get("candidates", [])])
         await handler.handle_patch_request(req)
         return {"status": "success"}
 
@@ -380,8 +409,8 @@ def register(app) -> dict:
             IceCandidate, SmallWebRTCPatchRequest)
 
         req = SmallWebRTCPatchRequest(pc_id=patch.get("pc_id", ""),
-                                      candidates=[IceCandidate(**c) for c in
-                                                  patch.get("candidates", [])])
+            candidates=[IceCandidate(**c) for c in
+                patch.get("candidates", [])])
         await handler.handle_patch_request(req)
         return {"status": "success"}
 
@@ -396,7 +425,7 @@ def register(app) -> dict:
             return RedirectResponse(url=CLIENT_PATH)
 
         app.mount("/voice/client", PipecatPrebuiltUI, name="voice-client")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc: # noqa: BLE001
         with _lock:
             _state.update(error=f"prebuilt client unavailable: {exc}"[:200])
 

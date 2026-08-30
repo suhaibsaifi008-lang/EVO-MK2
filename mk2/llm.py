@@ -1,4 +1,4 @@
-﻿"""Model router — role-based LLM access with provider failover + streaming.
+"""Model router — role-based LLM access with provider failover + streaming.
 
 Roles: primary | fast | reasoning. Providers: any OpenAI-compatible endpoint
 first (OpenAI/OpenRouter/FreeLLMAPI/LM Studio), then Ollama. The rest of MK2
@@ -15,24 +15,49 @@ import urllib.request
 
 from .config import settings
 
-ROLES = ("primary", "fast", "reasoning")
+ROLES = ("primary", "fast", "reasoning", "voice")
 
 # Phase 4.5: token-exhaustion cascade. Ranked by the user's FreeLLMAPI
 # table (score / intelligence). When one model's quota dries up we slide
 # down this list automatically instead of leaving the provider.
 PRIMARY_LADDER = [
-    "gpt-oss-120b",           # rank 1 - score 0.927
-    "command-a-vision",       # rank 2 - 0.886, vision
-    "gpt-5.4-mini",           # rank 3 - intelligence 100
-    "inkling",                # rank 4 - intelligence 99
-    "nemotron-3-ultra-550b",  # rank 12 - intelligence 99-100, 1M ctx
-    "qwen3.6-27b",            # rank 6 - speed 99 workhorse
+    "claude-haiku-4-5",
+    "claude-sonnet-4-6",
+    "claude-opus-4-6",
+    "claude-haiku-4-5-20251001",
+]
+VOICE_LADDER = [
+    "claude-haiku-4-5",
+    "claude-haiku-4-5-20251001",
+    "ollama:qwen2.5:7b",
+    "ollama:phi4-mini",
+    "claude-sonnet-4-6",
 ]
 MODEL_LADDERS = {
-    "fast": ["qwen3.6-27b", "gpt-oss-20b", "gpt-5.4-nano"],
-    "reasoning": ["gpt-5.4-mini", "inkling", "nemotron-3-ultra-550b",
-                  "nemotron-3-ultra", "o3"],
+    "fast": ["claude-haiku-4-5", "claude-haiku-4-5-20251001", "claude-sonnet-4-6"],
+    "reasoning": ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"],
+    "voice": VOICE_LADDER,
 }
+
+_PROXY_ERR_PATTERNS = (
+    "the requested model is not currently available",
+    "isn't available. please pick a claude model",
+    "is not currently available. please select",
+    "model not found",
+    "unsupported model",
+)
+
+def _is_proxy_error(text: str) -> bool:
+    if not text:
+        return False
+    low = text.lower().strip()
+    return any(p in low for p in _PROXY_ERR_PATTERNS)
+
+
+def estimate_tokens(messages: list[dict]) -> int:
+    """Rough token count estimation: ~4 characters per token for English text."""
+    total_chars = sum(len(str(m.get("content", ""))) for m in (messages or []))
+    return max(1, total_chars // 4)
 
 # cooldown so an exhausted/rate-limited model isn't retried every turn
 _cooldowns: dict[str, float] = {}
@@ -126,10 +151,34 @@ def _hard_bounded(fn, seconds: float):
     return box["r"]
 
 
-def _providers() -> list[dict]:
-    """Ordered chain. FreeLLMAPI (user's primary) first; Gemini second;
-    Ollama = offline fallback last."""
+def _providers(*args, **kwargs) -> list[dict]:
+    """Ordered chain. Anthropic primary; FreeLLMAPI/OpenAI secondary;
+    Gemini third; Ollama = offline fallback last (or first if role=='voice')."""
+    role = args[0] if args else kwargs.get("role", "primary")
     provs = []
+    ollama_prov = None
+    if settings.ollama_base:
+        ollama_prov = {
+            "name": "ollama", "kind": "openai", "base": settings.ollama_base,
+            "key": "", "default_model": settings.ollama_model or "qwen3:4b",
+            "timeout_bias": 20,
+        }
+
+    if settings.gemini_key:
+        provs.append({
+            "name": "gemini", "kind": "gemini", "base": "",
+            "key": settings.gemini_key,
+            "default_model": settings.gemini_text_model or "gemini-3.5-flash-lite",
+            "timeout_bias": 0,
+        })
+    if settings.anthropic_key:
+        provs.append({
+            "name": "anthropic", "kind": "anthropic",
+            "base": settings.anthropic_base.rstrip("/"),
+            "key": settings.anthropic_key,
+            "default_model": settings.anthropic_model or "claude-sonnet-4-6",
+            "timeout_bias": 0,
+        })
     if settings.openai_key:
         is_ollama = (settings.ollama_base
                      and settings.openai_base.rstrip("/") == settings.ollama_base.rstrip("/"))
@@ -139,23 +188,14 @@ def _providers() -> list[dict]:
                 "base": settings.openai_base, "key": settings.openai_key,
                 "default_model": settings.openai_model, "timeout_bias": 0,
             })
-    if settings.gemini_key:
-        provs.append({
-            "name": "gemini", "kind": "gemini", "base": "",
-            "key": settings.gemini_key,
-            "default_model": settings.gemini_text_model,
-            "timeout_bias": 0,
-        })
-    if settings.ollama_base:
-        provs.append({
-            "name": "ollama", "kind": "openai", "base": settings.ollama_base,
-            "key": "", "default_model": settings.ollama_model or "qwen3:4b",
-            "timeout_bias": 20,
-        })
+    if role != "voice" and ollama_prov:
+        provs.append(ollama_prov)
     return provs
 
 
 def _role_model(role: str) -> str:
+    if role == "voice":
+        return getattr(settings, "voice_model", "") or "claude-haiku-4-5-20251001"
     if role == "fast":
         return settings.fast_model or ""
     if role == "reasoning":
@@ -164,21 +204,25 @@ def _role_model(role: str) -> str:
 
 
 def _attempts(role: str, model_override: str = ""):
-    """Per-provider attempts. FreeLLMMAPI expands into its ranked model
-    ladder (top-to-bottom cascade on quota exhaustion); every other
+    """Per-provider attempts. Anthropic and FreeLLMAPI expand into their ranked
+    model ladder (top-to-bottom cascade on quota exhaustion); every other
     provider keeps a single model. Cooldown-skips exhausted models."""
     from .config import settings as s
 
     out: list[tuple[dict, str]] = []
     override = model_override.strip()
-    for p in _providers():
-        if p["name"] == "freellmapi":
+    try:
+        prov_list = _providers(role)
+    except TypeError:
+        prov_list = _providers()
+    for p in prov_list:
+        if p["name"] in ("anthropic", "freellmapi", "openai"):
             models = [override] if override else _ladder(role)
         else:
             m = override or p["default_model"]
             # role overrides are FreeLLMAPI model names - never leak them
             # onto gemini/ollama endpoints
-            if (p.get("kind") == "openai" and role == "fast"
+            if (p.get("kind") == "openai" and role in ("fast", "voice")
                     and s.fast_model and not override):
                 m = s.fast_model
             models = [m] if m else []
@@ -196,21 +240,21 @@ def _attempts(role: str, model_override: str = ""):
     if not uniq:
         # everything is cooling down - better to retry the ladder than die
         for p in _providers():
-            if p["name"] == "freellmapi":
+            if p["name"] in ("anthropic", "freellmapi", "openai"):
                 for m in ([override] if override else _ladder(role)):
                     uniq.append((p, m))
                 break
         if not uniq:
             raise LLMUnavailable("no language providers configured")
         return uniq
-    # measured-speed reorder: within the freellmapi block, routes that have
+    # measured-speed reorder: within primary routes, routes that have
     # historically answered fastest come first (stable vs original rank).
     # An explicit user ladder/override keeps its exact order.
     if not override:
-        freellm = [u for u in uniq if u[0]["name"] == "freellmapi"]
-        others = [u for u in uniq if u[0]["name"] != "freellmapi"]
-        freellm.sort(key=_speed_rank)
-        return freellm + others
+        pri = [u for u in uniq if u[0]["name"] in ("anthropic", "freellmapi", "openai", "gemini")]
+        others = [u for u in uniq if u[0]["name"] not in ("anthropic", "freellmapi", "openai", "gemini")]
+        pri.sort(key=_speed_rank)
+        return pri + others
     return uniq
 
 
@@ -259,6 +303,99 @@ def _deadline_iter(iterator, first_timeout: float = 20.0, gap_timeout: float = 2
         yield item
 
 
+def _anthropic_chat(messages: list[dict], model: str, temperature: float, timeout: int = 60,
+                    base: str = "", key: str = "") -> str:
+    """Direct HTTP call to Anthropic Messages API (with thinking block filtering)."""
+    key = key or settings.anthropic_key
+    base = (base or settings.anthropic_base or "https://api.anthropic.com").rstrip("/")
+    sys_prompts = [m["content"] for m in messages if m["role"] == "system"]
+    chat_msgs = [{"role": m["role"], "content": m["content"]}
+                 for m in messages if m["role"] != "system"]
+    payload = {
+        "model": model,
+        "max_tokens": 4096,
+        "temperature": temperature,
+        "messages": chat_msgs,
+    }
+    if sys_prompts:
+        payload["system"] = "\n".join(sys_prompts)
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": key,
+        "anthropic-version": "2023-06-01",
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        base + "/v1/messages",
+        data=data, headers=headers, method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        result = json.loads(resp.read().decode("utf-8"))
+        content = result.get("content", [])
+        raw_text = ""
+        if isinstance(content, list):
+            texts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text" and b.get("text")]
+            if texts:
+                raw_text = "\n".join(texts).strip()
+            elif content and isinstance(content[0], dict):
+                raw_text = (content[0].get("text", "") or "").strip()
+        else:
+            raw_text = (result.get("text", "") or "").strip()
+        if _is_proxy_error(raw_text):
+            raise LLMUnavailable(f"Proxy rejected model {model}: {raw_text[:60]}")
+        return raw_text
+
+
+def _anthropic_chat_stream(messages: list[dict], model: str, temperature: float, timeout: int = 75,
+                           base: str = "", key: str = ""):
+    """Direct SSE streaming from Anthropic Messages API."""
+    key = key or settings.anthropic_key
+    base = (base or settings.anthropic_base or "https://api.anthropic.com").rstrip("/")
+    sys_prompts = [m["content"] for m in messages if m["role"] == "system"]
+    chat_msgs = [{"role": m["role"], "content": m["content"]}
+                 for m in messages if m["role"] != "system"]
+    payload = {
+        "model": model,
+        "max_tokens": 4096,
+        "temperature": temperature,
+        "stream": True,
+        "messages": chat_msgs,
+    }
+    if sys_prompts:
+        payload["system"] = "\n".join(sys_prompts)
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+        "x-api-key": key,
+        "anthropic-version": "2023-06-01",
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        base + "/v1/messages",
+        data=data, headers=headers, method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        for raw in resp:
+            line = raw.decode("utf-8", "ignore").strip()
+            if not line.startswith("data:"):
+                continue
+            d = line[5:].strip()
+            if not d or d == "[DONE]":
+                continue
+            try:
+                event = json.loads(d)
+            except Exception:
+                continue
+            etype = event.get("type")
+            if etype == "content_block_delta":
+                delta = event.get("delta", {})
+                delta_text = delta.get("text", "")
+                if delta_text:
+                    if _is_proxy_error(delta_text):
+                        raise LLMUnavailable(f"Proxy rejected model {model}: {delta_text[:60]}")
+                    yield delta_text
+
+
 def _gemini_client():
     from google import genai
 
@@ -282,6 +419,75 @@ def _gemini_chat(client, messages: list[dict], model: str, temperature: float) -
     return (resp.text or "").strip()
 
 
+def _offline_parse(text: str) -> str | None:
+	"""Local command parser for when all LLM providers are unreachable."""
+	import re
+	from datetime import datetime
+
+	t = (text or "").lower().strip(" .!?").replace("'", "")
+	t = re.sub(r"\s+", " ", t)
+
+	if t in ("time", "the time", "what time", "whats the time",
+	"what is the time", "what time is it", "current time"):
+		return datetime.now().strftime("It is %H:%M.")
+	if t in ("date", "today", "todays date", "what is the date",
+	"whats the date", "what day is it", "what is today"):
+		return datetime.now().strftime("Today is %A, %d %B %Y.")
+
+	m = re.search(r"what is\s+([\d\s+\-*/^%.]+)", t)
+	if m:
+		expr = m.group(1).strip()
+		try:
+			result = eval(expr, {"__builtins__": {}}, {})
+			return f"{expr} equals {result}."
+		except Exception:
+			pass
+	m = re.search(r"^([\d]+\s*[\+\-\*/]\s*[\d]+)\s*$", t)
+	if m:
+		try:
+			result = eval(m.group(1), {"__builtins__": {}}, {})
+			return f"That equals {result}."
+		except Exception:
+			pass
+
+	if re.search(r"\bwho are you\b|\bwhat are you\b|\byour name\b", t):
+		return ("I'm EVO. Language service is offline but I can handle "
+		"time, date, math, weather, timers, and simple commands.")
+	if re.search(r"\bhelp\b|\bwhat can you do\b", t):
+		return ("Offline mode: time, date, basic math, weather, timers, "
+		"and local app commands.")
+
+	if re.search(r"weather", t):
+		try:
+			from . import tools
+			m_city = re.search(r"in\s+([a-zA-Z\s]+)$", t)
+			city = m_city.group(1).strip() if m_city else ""
+			r = tools.call("weather_now", {"city": city})
+			return r.get("speech") or "Weather unavailable offline."
+		except Exception:
+			return "Weather check failed offline."
+
+	m = re.fullmatch(r"open\s+(?:up\s+)?(?:the\s+)?(\w+)", t)
+	if m:
+		try:
+			from . import tools
+			r = tools.call("open_app", {"target": m.group(1)})
+			return r.get("speech") or f"Tried to open {m.group(1)}."
+		except Exception:
+			return "Can't open apps offline."
+
+	m = re.search(r"(?:set|start)\s+(?:a\s+)?timer\s+(?:for\s+)?(.+)", t)
+	if m:
+		try:
+			from . import tools
+			r = tools.call("timer_set", {"duration": m.group(1).strip(), "label": "Timer"})
+			return r.get("speech") or "Timer command sent."
+		except Exception:
+			return "Can't set timers offline."
+
+	return None
+
+
 def chat(messages: list[dict], temperature: float = 0.6, model: str = "",
          role: str = "primary", timeout: int = 60, bias: bool = True,
          max_providers: int | None = None) -> str:
@@ -292,7 +498,15 @@ def chat(messages: list[dict], temperature: float = 0.6, model: str = "",
     for prov, m in attempts:
         try:
             total = timeout + (prov["timeout_bias"] if bias else 0)
-            if prov.get("kind") == "gemini":
+            if prov.get("kind") == "anthropic":
+                text = _hard_bounded(
+                    lambda: _anthropic_chat(
+                        messages, m, temperature, timeout=total,
+                        base=prov.get("base", ""), key=prov.get("key", "")
+                    ),
+                    total,
+                )
+            elif prov.get("kind") == "gemini":
                 client = _hard_bounded(lambda: _gemini_client(), 10)
                 text = _hard_bounded(
                     lambda: _gemini_chat(client, messages, m, temperature), total)
@@ -316,6 +530,17 @@ def chat(messages: list[dict], temperature: float = 0.6, model: str = "",
         except Exception as exc:
             errors.append(f"{prov['name']}/{m}: {exc}")
             _penalize(prov["name"], m, str(exc))
+
+    # Offline local fallback for basic commands
+    user_prompt = ""
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            user_prompt = msg.get("content", "")
+            break
+    offline = _offline_parse(user_prompt)
+    if offline:
+        return offline
+
     raise LLMUnavailable("; ".join(errors) or "nothing configured")
 
 
@@ -367,7 +592,6 @@ def chat_vision(prompt: str, image_bytes: bytes, timeout: int = 45,
             errors.append(f"{prov['name']}/{m}: {exc}")
     raise LLMUnavailable("; ".join(errors) or "no vision provider")
 
-
 def _race_stream(pairs, messages: list[dict], temperature: float,
                  first_timeout: float = 4.0, info: dict | None = None):
     """Start the top routes simultaneously; whoever produces the first
@@ -378,50 +602,92 @@ def _race_stream(pairs, messages: list[dict], temperature: float,
                        (caller should retry on remaining routes)."""
     import queue as _q
 
+    # Avoid concurrency throttling on single-key proxies by racing only distinct endpoints
+    seen_bases = set()
+    distinct_pairs = []
+    for prov, m in pairs:
+        bk = (prov.get("base", ""), prov.get("key", ""))
+        if bk in seen_bases:
+            continue
+        seen_bases.add(bk)
+        distinct_pairs.append((prov, m))
+    pairs = distinct_pairs or pairs[:1]
+
     q: _q.Queue = _q.Queue()
-    stop = threading.Event()
+    stop_events = {i: threading.Event() for i in range(len(pairs))}
 
-    def build_req(prov: dict, m: str):
-        headers = {"Content-Type": "application/json",
-                   "Accept": "text/event-stream"}
-        if prov["key"]:
-            headers["Authorization"] = f"Bearer {prov['key']}"
-        return urllib.request.Request(
-            prov["base"].rstrip("/") + "/chat/completions",
-            data=json.dumps({"model": m, "messages": messages,
-                             "temperature": temperature,
-                             "stream": True}).encode(),
-            headers=headers, method="POST")
-
-    def pump(req, tag, prov, m):
+    def pump(prov, m, tag):
         started = time.time()
         first = True
         try:
-            with urllib.request.urlopen(
-                    req, timeout=40 + prov.get("timeout_bias", 0)) as resp:
-                for raw in resp:
-                    if stop.is_set():
+            if prov.get("kind") == "anthropic":
+                for delta in _anthropic_chat_stream(
+                        messages, m, temperature, timeout=25,
+                        base=prov.get("base", ""), key=prov.get("key", "")):
+                    if stop_events[tag].is_set():
                         return
-                    line = raw.decode("utf-8", "ignore").strip()
-                    if not line.startswith("data:"):
-                        continue
-                    data = line[5:].strip()
-                    if data == "[DONE]":
-                        break
-                    try:
-                        delta = json.loads(data)["choices"][0].get(
-                            "delta", {}).get("content", "")
-                    except Exception:
-                        continue
                     if delta:
                         q.put((tag, "delta", delta))
                         if first:
                             dt = time.time() - started
                             _record_ttft(prov["name"], m, dt)
-                            if dt > 6.0:
-                                _penalize(prov["name"], m, "slow first token")
                             first = False
-                q.put((tag, "done", None))
+            elif prov.get("kind") == "gemini":
+                client = _gemini_client()
+                from google.genai import types
+
+                sys = [mm["content"] for mm in messages if mm["role"] == "system"]
+                rest = [
+                    {"role": "user" if mm["role"] == "user" else "model",
+                     "parts": [{"text": mm["content"]}]}
+                    for mm in messages if mm["role"] != "system"
+                ]
+                cfg = types.GenerateContentConfig(
+                    system_instruction="\n".join(sys) if sys else None,
+                    temperature=temperature,
+                )
+                for chunk in client.models.generate_content_stream(
+                        model=m, contents=rest, config=cfg):
+                    if stop_events[tag].is_set():
+                        return
+                    t = getattr(chunk, "text", "") or ""
+                    if t:
+                        q.put((tag, "delta", t))
+                        if first:
+                            dt = time.time() - started
+                            _record_ttft(prov["name"], m, dt)
+                            first = False
+            else:
+                headers = {"Content-Type": "application/json", "Accept": "text/event-stream"}
+                if prov.get("key"):
+                    headers["Authorization"] = f"Bearer {prov['key']}"
+                req = urllib.request.Request(
+                    prov["base"].rstrip("/") + "/chat/completions",
+                    data=json.dumps({"model": m, "messages": messages,
+                                     "temperature": temperature, "stream": True}).encode(),
+                    headers=headers, method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=25 + prov.get("timeout_bias", 0)) as resp:
+                    for raw in resp:
+                        if stop_events[tag].is_set():
+                            return
+                        line = raw.decode("utf-8", "ignore").strip()
+                        if not line.startswith("data:"):
+                            continue
+                        data = line[5:].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            delta = json.loads(data)["choices"][0].get("delta", {}).get("content", "")
+                        except Exception:
+                            continue
+                        if delta:
+                            q.put((tag, "delta", delta))
+                            if first:
+                                dt = time.time() - started
+                                _record_ttft(prov["name"], m, dt)
+                                first = False
+            q.put((tag, "done", None))
         except Exception as exc:
             q.put((tag, "error", exc))
 
@@ -429,14 +695,13 @@ def _race_stream(pairs, messages: list[dict], temperature: float,
     tag_route: dict[int, tuple[dict, str]] = {}
     for i, (prov, m) in enumerate(pairs):
         tag_route[i] = (prov, m)
-        t = threading.Thread(target=pump,
-                             args=(build_req(prov, m), i, prov, m),
+        t = threading.Thread(target=pump, args=(prov, m, i),
                              daemon=True, name=f"mk2-race-{i}")
         t.start()
         threads.append(t)
     deadline_first = time.time() + first_timeout
     total_deadline = time.time() + 90.0
-    GAP_TIMEOUT = 7.0            # winner stalled mid-generation -> abort fast
+    GAP_TIMEOUT = 18.0           # winner stalled mid-generation -> abort fast
     winner = None
     finished: set[int] = set()
     last_activity = time.time()
@@ -472,7 +737,9 @@ def _race_stream(pairs, messages: list[dict], temperature: float,
             if kind == "delta":
                 if winner is None:
                     winner = tag
-                    stop.set()      # abandon the loser immediately
+                    for other_tag, ev in stop_events.items():
+                        if other_tag != winner:
+                            ev.set()      # abandon the loser immediately
                 if tag == winner:
                     yielded = True
                     yield payload
@@ -496,36 +763,60 @@ def _race_stream(pairs, messages: list[dict], temperature: float,
                         info["no_token"] = True   # ladder must take over
                     return          # every racer died pre-token
     finally:
-        stop.set()
+        for ev in stop_events.values():
+            ev.set()
 
 
 def chat_stream(messages: list[dict], temperature: float = 0.6, model: str = "",
-                role: str = "primary", timeout: int = 75):
+                role: str = "primary", timeout: int = 30):
     """Yield content deltas; per-provider native streaming with fallbacks."""
     errors = []
     attempts = _attempts(role, model)
 
-    # Phase 7.5: parallel race of the top-2 openai routes (primary only).
-    if os.environ.get("EVO_RACE", "1") == "1" and role == "primary" and not model:
-        pairs = [(p, m) for p, m in attempts if p.get("kind") == "openai"][:2]
-        if len(pairs) == 2:
-            info: dict = {}
-            buf: list[str] = []
-            for delta in _race_stream(pairs, messages, temperature, info=info):
-                buf.append(delta)
-                yield delta
-            if info.get("no_token"):
-                pass                       # nobody spoke -> ladder takes over
-            elif not info.get("stalled"):
-                return
-            else:
-                # winner stalled mid-generation: caller resets + retries
-                _penalize(pairs[0][0]["name"], pairs[0][1], "stalled",
-                          hard=True)
-                raise LLMStreamStalled(partial="".join(buf))
+    # Parallel race of the top-2 routes across all roles (voice, fast, primary).
+    if os.environ.get("EVO_RACE", "1") == "1" and not model and len(attempts) >= 2:
+        pairs = attempts[:2]
+        info: dict = {}
+        buf: list[str] = []
+        race_timeout = 3.0 if role == "voice" else 4.5
+        for delta in _race_stream(pairs, messages, temperature, first_timeout=race_timeout, info=info):
+            buf.append(delta)
+            yield delta
+        if info.get("no_token"):
+            pass                       # nobody spoke -> ladder takes over
+        elif not info.get("stalled"):
+            return
+        else:
+            # winner stalled mid-generation: caller resets + retries
+            _penalize(pairs[0][0]["name"], pairs[0][1], "stalled", hard=True)
+            raise LLMStreamStalled(partial="".join(buf))
 
     for idx, (prov, m) in enumerate(attempts):
         try:
+            if prov.get("kind") == "anthropic":
+                got = False
+
+                def gen_anthropic():
+                    for delta in _anthropic_chat_stream(
+                            messages, m, temperature, timeout=timeout,
+                            base=prov.get("base", ""), key=prov.get("key", "")):
+                        yield delta
+
+                first_t = 20.0 if idx == 0 else 15.0
+                started = time.time()
+                first = True
+                for delta in _deadline_iter(gen_anthropic(), first_t, 25.0):
+                    if first:
+                        _record_ttft(prov["name"], m, time.time() - started)
+                        first = False
+                    got = True
+                    yield delta
+                if got:
+                    return
+                errors.append(f"{prov['name']}/{m}: empty stream")
+                _penalize(prov["name"], m, "empty stream")
+                continue
+
             if prov.get("kind") == "gemini":
                 client = _hard_bounded(lambda: _gemini_client(), 10)
                 got = False
@@ -549,10 +840,10 @@ def chat_stream(messages: list[dict], temperature: float = 0.6, model: str = "",
                         if t:
                             yield t
 
-                first_t = 5.0 if idx == 0 else 12.0
+                first_t = 20.0 if idx == 0 else 15.0
                 started = time.time()
                 first = True
-                for delta in _deadline_iter(gen(), first_t, 15.0):
+                for delta in _deadline_iter(gen(), first_t, 25.0):
                     if first:
                         _record_ttft(prov["name"], m, time.time() - started)
                         first = False
@@ -590,10 +881,10 @@ def chat_stream(messages: list[dict], temperature: float = 0.6, model: str = "",
                             yield delta
 
             got = False
-            first_t = 5.0 if idx == 0 else 12.0
+            first_t = 20.0 if idx == 0 else 15.0
             started = time.time()
             first = True
-            for delta in _deadline_iter(raw_stream(), first_t, 15.0):
+            for delta in _deadline_iter(raw_stream(), first_t, 25.0):
                 if first:
                     _record_ttft(prov["name"], m, time.time() - started)
                     first = False
@@ -609,6 +900,18 @@ def chat_stream(messages: list[dict], temperature: float = 0.6, model: str = "",
         return
     except Exception as exc:
         errors.append(f"oneshot: {exc}")
+
+    # Offline local fallback
+    user_prompt = ""
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            user_prompt = msg.get("content", "")
+            break
+    offline = _offline_parse(user_prompt)
+    if offline:
+        yield offline
+        return
+
     raise LLMUnavailable("; ".join(errors))
 
 

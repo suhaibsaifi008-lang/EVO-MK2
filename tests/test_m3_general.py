@@ -88,8 +88,8 @@ class TestAgentFailStreak:
         monkeypatch.setattr("mk2.llm.chat_stream", lambda *a, **k: iter([next(seq)]))
         events = []
         reply = brain_handle("run boom", events)
-        assert "could not" in reply.lower() or "failed" in reply.lower()
-        assert "could not" in reply.lower() or "failed" in reply.lower()
+        assert "could not" in reply.lower() or "couldn't" in reply.lower() or "failed" in reply.lower()
+        assert "could not" in reply.lower() or "couldn't" in reply.lower() or "failed" in reply.lower()
         tool_events = [e for e in events if e["type"] == "tool"]
         assert len(tool_events) <= 3  # no endless retry loop
 

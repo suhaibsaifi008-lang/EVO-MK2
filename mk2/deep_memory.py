@@ -12,12 +12,15 @@ Public surface:
 """
 import hashlib
 import json
+import logging
 import math
 import struct
 import threading
 
 from . import db
 from .config import settings
+
+log = logging.getLogger("mk2.deep_memory")
 
 _lock = threading.Lock()
 _engine = {"name": "", "dim": 0}
@@ -118,8 +121,8 @@ def remember(text: str, importance: float = 1.0,
     return ep_id
 
 
-def search(query: str, k: int = 4) -> list[dict]:
-    """Semantic first; keyword overlap as tiebreaker/fallback."""
+def search(query: str, k: int = 4, min_similarity: float = 0.25) -> list[dict]:
+    """Semantic first; keyword overlap as tiebreaker/fallback with relevance threshold."""
     query = (query or "").strip()
     if not query:
         return []
@@ -137,13 +140,30 @@ def search(query: str, k: int = 4) -> list[dict]:
         low = r["summary"].lower()
         kw = sum(1 for w in words if w in low)
         score = (max(sem, 0.0), kw)
-        if sem > 0.25 or kw > 0:
+        # Relevance threshold: only include semantic matches >= min_similarity or high keyword matches
+        if sem >= min_similarity or kw >= 1:
             scored.append((score, r))
     scored.sort(key=lambda t: (t[0][0], t[0][1]), reverse=True)
     return [{"summary": r["summary"], "ended_at": r["ended_at"],
              "importance": r["importance"],
              "semantic": round(max(s[0], 0.0), 3),
              "keywords": s[1]} for s, r in scored[:max(1, k)]]
+
+
+def reindex_episodes() -> int:
+    """Recompute embeddings for unindexed or stale stored episodes."""
+    rows = db.episodes_with_embeddings()
+    updated = 0
+    for r in rows:
+        summary = r.get("summary", "").strip()
+        if summary and not r.get("embedding"):
+            try:
+                blob, _ = embed(summary)
+                db.set_episode_embedding(r["id"], blob)
+                updated += 1
+            except Exception:
+                pass
+    return updated
 
 
 def status() -> dict:

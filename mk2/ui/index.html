@@ -3,50 +3,369 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>EVO MK2</title>
-<link rel="stylesheet" href="/ui/style.css?v=9"/>
+<title>EVO MK2 — Cinematic Console</title>
+<link rel="stylesheet" href="/ui/style.css?v=25"/>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='%23050505' stroke='%23ffaa30' stroke-width='6'/><circle cx='50' cy='50' r='20' fill='%23ffaa30'/></svg>"/>
 </head>
 <body>
+
+<!-- Magnetic Glowing Cursor -->
+<div id="cursor-ring" class="cursor-ring"></div>
+<div id="cursor-dot" class="cursor-dot"></div>
+
+<!-- Background Noise & Atmospheric Glows -->
+<div class="bg-noise"></div>
+<div class="bg-vignette"></div>
+<div class="bg-radial-glow"></div>
 <canvas id="faceCanvas"></canvas>
+
 <div id="app">
+  <!-- ===== TOPBAR ===== -->
   <header class="topbar">
-    <div class="brand"><span class="orb-dot"></span><b>EVO<span class="v2">MK2</span></b></div>
-    <button id="newChat" class="top-btn" onclick="location.reload()">+ New Chat</button><div class="spacer"></div><a href="/voice/client/" target="_blank" class="top-btn">Voice</a><a href="/face" target="_blank" class="top-btn">Face</a>
-    <span id="engineTag" class="tag">�</span>
+    <div class="brand">
+      <span class="orb-dot"></span>
+      <b>EVO <span class="v2">MK2</span></b>
+    </div>
+    
+    <div class="wake-badge" title="Default Wake Word">
+      <span class="wake-pulse"></span>
+      <span class="wake-label">WAKE:</span>
+      <b class="wake-word">"EVO"</b>
+    </div>
+
+    <nav class="tab-nav">
+      <button class="tab-btn active" data-tab="chat">💬 Chat</button>
+      <button class="tab-btn" data-tab="autonomy">⚡ JARVIS</button>
+      <button class="tab-btn" data-tab="swarm">🐝 Swarms</button>
+      <button class="tab-btn" data-tab="tools">🔧 Tools</button>
+      <button class="tab-btn" data-tab="system">⚙ System</button>
+    </nav>
+    
+    <div class="spacer"></div>
+    <a href="/landing" class="top-btn highlight" title="Cinematic Landing Page">🌟 Landing</a>
+    <a href="/voice/client/" target="_blank" class="top-btn" title="WebRTC Low-Latency Voice Client">🎙 Voice</a>
+    <span id="engineTag" class="tag">⏳ Online</span>
     <span id="conn" class="dot offline"></span>
   </header>
 
-  <main class="main">
-    <div class="scroll" id="scrollArea">
-      <div class="hero" id="hero">
-        <h1 id="greet">Systems online.</h1>
-        <p>Ask anything, or use the mic. I act � not just answer.</p>
+  <!-- ===== CHAT TAB ===== -->
+  <div class="tab-panel active" id="tab-chat">
+    <main class="main">
+      <div class="scroll" id="scrollArea">
+        <div class="hero" id="hero">
+          <div class="hero-core-ring">
+            <div class="core-inner-glow"></div>
+          </div>
+          <h1 id="greet">EVO MK2</h1>
+          <h2 class="hero-subtitle">AN AI THAT SEES. THINKS. ACTS.</h2>
+          <p class="hero-desc">Your autonomous desktop intelligence. Ready for text, voice, and system commands.</p>
+          
+          <div class="quick-prompts">
+            <button class="prompt-chip" onclick="quickPrompt('Inspect system health and run diagnostic self-check')">⚡ Audit System Health</button>
+            <button class="prompt-chip" onclick="quickPrompt('What is on my screen right now?')">👁 Screen Vision</button>
+            <button class="prompt-chip" onclick="quickPrompt('Start an autonomous research mission on modern AI agent architectures')">🐝 Dispatch Swarm</button>
+            <button class="prompt-chip" onclick="quickPrompt('List what you remember about my preferences')">🧠 Recall Memory</button>
+          </div>
+        </div>
+        <div id="log" class="log"></div>
       </div>
-      <div id="log" class="log"></div>
-    </div>
-  </main>
+    </main>
 
-  <form id="chatForm" class="composer-wrap" autocomplete="off">
-    <div id="sttPreview" class="stt-preview"></div>
-    <div class="composer">
-      <button type="button" id="convoBtn" class="icon-btn convo" title="Always-on conversation mode">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><circle cx="18" cy="5" r="4"/></svg>
-      </button>
-      <button type="button" id="pttBtn" class="icon-btn ptt" title="Push to talk">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>
-      </button>
-      <textarea id="chatInput" rows="1" placeholder="Message EVO�"></textarea>
-      <button type="button" id="stopBtn" class="icon-btn stop-btn hidden">�</button>
-      <button type="submit" class="send-btn" title="Send">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/></svg>
-      </button>
+    <form id="chatForm" class="composer-wrap" autocomplete="off">
+      <div id="sttPreview" class="stt-preview"></div>
+      <div class="composer">
+        <button type="button" id="convoBtn" class="icon-btn convo" title="Always-on conversational mode">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><circle cx="18" cy="5" r="4"/></svg>
+        </button>
+        <button type="button" id="pttBtn" class="icon-btn ptt" title="Push to talk (Hold or click)">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>
+        </button>
+        <textarea id="chatInput" rows="1" placeholder="Ask EVO anything, or say 'EVO'…"></textarea>
+        <button type="button" id="stopBtn" class="icon-btn stop-btn hidden">⏹</button>
+        <button type="submit" class="send-btn" title="Send (Enter)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/></svg>
+        </button>
+      </div>
+      <div class="composer-foot">
+        <label class="toggle"><input type="checkbox" id="voiceOut"/><span>🔊 Neural Voice Replies</span></label>
+        <span class="foot-sep">·</span>
+        <span class="foot-tip">Wakeup: <b>"EVO"</b></span>
+      </div>
+    </form>
+  </div>
+
+  <!-- ===== JARVIS AUTONOMY TAB ===== -->
+  <div class="tab-panel" id="tab-autonomy">
+    <div class="panel-scroll">
+      <div class="panel-content">
+        <div class="panel-header" style="display:flex; justify-content:space-between; align-items:center;">
+          <div>
+            <h2>⚡ JARVIS Autonomy & Revenue</h2>
+            <p class="panel-desc">Autonomous platform operations, opportunity scanning, and human-in-the-loop approval queue.</p>
+          </div>
+          <button id="killSwitchBtn" class="mini-action danger" style="background:#ff3333; color:#fff; font-weight:bold; padding:8px 16px; border-radius:6px; border:none; cursor:pointer;" title="Halt all autonomous loops and browser actions">🛑 STOP EVERYTHING</button>
+        </div>
+
+        <div class="stats-grid">
+          <div class="card stat-card">
+            <div class="stat-icon">🛡</div>
+            <div class="stat-body">
+              <div class="stat-label">CONSENT TIER</div>
+              <div id="autoConsent" class="stat-value">assist</div>
+            </div>
+          </div>
+          <div class="card stat-card">
+            <div class="stat-icon">⭐</div>
+            <div class="stat-body">
+              <div class="stat-label">TRUST SCORE</div>
+              <div id="autoTrust" class="stat-value">100%</div>
+            </div>
+          </div>
+          <div class="card stat-card">
+            <div class="stat-icon">💵</div>
+            <div class="stat-body">
+              <div class="stat-label">REVENUE (7D)</div>
+              <div id="autoRevenue" class="stat-value">$0.00</div>
+            </div>
+          </div>
+          <div class="card stat-card">
+            <div class="stat-icon">🌐</div>
+            <div class="stat-body">
+              <div class="stat-label">PLATFORMS</div>
+              <div id="autoPlatforms" class="stat-value">Upwork, Email</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <h3>⚖ Approval Queue (Actions Pending Review)</h3>
+            <button id="refreshApprovalsBtn" class="mini-action">↻ Refresh Queue</button>
+          </div>
+          <div id="approvalsList" class="detail-body">
+            <div class="empty-state">No pending actions. EVO is monitoring opportunities in the background.</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>🚀 On-Demand Opportunity Scan</h3>
+          <p class="panel-desc" style="margin-bottom:12px;">Force an immediate cycle across platforms to find and prepare proposals or outreach.</p>
+          <div class="toolbar">
+            <button id="scanOppsBtn" class="action-btn small">🔍 Run Opportunity Scan</button>
+          </div>
+          <div id="scanResult" class="result-box" style="display:none; margin-top:12px;"></div>
+        </div>
+
+        <div class="card">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <h3>📋 Autonomous Action Audit Trail</h3>
+            <button id="refreshAuditBtn" class="mini-action">↻ Refresh Trail</button>
+          </div>
+          <div id="autoAuditBody" class="detail-body">
+            <div class="empty-state">Loading audit trail...</div>
+          </div>
+        </div>
+      </div>
     </div>
-    <div class="composer-foot">
-      <label class="toggle"><input type="checkbox" id="voiceOut" checked/><span>?? Voice replies</span></label>
+  </div>
+
+  <!-- ===== SWARM TAB ===== -->
+  <div class="tab-panel" id="tab-swarm">
+    <div class="panel-scroll">
+      <div class="panel-content">
+        <div class="panel-header">
+          <h2>🐝 Swarm Orchestrator</h2>
+          <p class="panel-desc">Dispatch parallel multi-agent swarms to solve complex objectives concurrently.</p>
+        </div>
+
+        <div class="card">
+          <h3>Dispatch New Autonomous Swarm</h3>
+          <div class="form-group">
+            <label for="swarmObjective">OBJECTIVE / GOAL</label>
+            <textarea id="swarmObjective" rows="3" placeholder="e.g. Audit repository code quality, generate unit test suite, and compile report..."></textarea>
+          </div>
+          <div class="form-row">
+            <label class="toggle"><input type="checkbox" id="swarmBg" checked/><span>Run in background</span></label>
+            <button id="swarmDispatchBtn" class="action-btn">🚀 Dispatch Swarm</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Active Swarms</h3>
+          <div class="toolbar">
+            <button id="swarmRefreshBtn" class="mini-action">↻ Refresh</button>
+          </div>
+          <div id="swarmList" class="item-list">
+            <div class="empty-state">No active swarms. Dispatch one above.</div>
+          </div>
+        </div>
+
+        <div class="card" id="swarmDetailCard" style="display:none">
+          <h3>Swarm Detail <span id="swarmDetailId" class="tag"></span></h3>
+          <div id="swarmDetailBody" class="detail-body"></div>
+        </div>
+      </div>
     </div>
-  </form>
+  </div>
+
+  <!-- ===== TOOLS TAB ===== -->
+  <div class="tab-panel" id="tab-tools">
+    <div class="panel-scroll">
+      <div class="panel-content">
+        <div class="panel-header">
+          <h2>🔧 Dynamic Tool Synthesizer</h2>
+          <p class="panel-desc">Create and test new capabilities at runtime — zero kernel restart needed.</p>
+        </div>
+
+        <div class="card">
+          <h3>Synthesize New Tool</h3>
+          <div class="form-group">
+            <label for="toolName">TOOL NAME</label>
+            <input id="toolName" type="text" placeholder="e.g. calculate_compound_interest"/>
+          </div>
+          <div class="form-group">
+            <label for="toolDesc">DESCRIPTION</label>
+            <input id="toolDesc" type="text" placeholder="e.g. Calculates future value of investment over years with interest rate"/>
+          </div>
+          <div class="form-group">
+            <label for="toolCode">PYTHON CODE</label>
+            <textarea id="toolCode" rows="8" class="code-input" placeholder="def run(principal: float, rate_pct: float, years: int) -> dict:&#10;    total = principal * ((1 + rate_pct/100) ** years)&#10;    return {'ok': True, 'speech': f'Projected balance is ${total:,.2f}', 'data': {'total': round(total, 2)}}"></textarea>
+          </div>
+          <div class="form-row">
+            <button id="toolSynthBtn" class="action-btn">⚡ Synthesize Tool</button>
+          </div>
+          <div id="toolSynthResult" class="result-box" style="display:none"></div>
+        </div>
+
+        <div class="card">
+          <h3>Loaded Capabilities & Tools</h3>
+          <div class="toolbar">
+            <button id="toolRefreshBtn" class="mini-action">↻ Refresh</button>
+            <span id="toolCount" class="tag">0</span>
+          </div>
+          <div id="toolList" class="item-list">
+            <div class="empty-state">Loading tools…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== SYSTEM TAB ===== -->
+  <div class="tab-panel" id="tab-system">
+    <div class="panel-scroll">
+      <div class="panel-content">
+        <div class="panel-header">
+          <h2>⚙ System Dashboard & Telemetry</h2>
+          <p class="panel-desc">Cinematic telemetry, identity sync, memory, security, and diagnostics.</p>
+        </div>
+
+        <!-- JARVIS Cinematic HUD -->
+        <div id="jarvis-hud" class="hud-container">
+          <div class="hud-ring-wrap">
+            <canvas id="brain-ring" width="180" height="180"></canvas>
+            <div class="hud-center">
+              <span id="hud-model" class="hud-val">Claude Sonnet</span>
+              <span id="hud-status" class="hud-sub">ONLINE</span>
+            </div>
+          </div>
+          <div class="hud-telemetry-grid">
+            <div class="hud-card">
+              <span class="hud-label">COGNITIVE DEPTH</span>
+              <span id="hud-depth" class="hud-metric">--</span>
+            </div>
+            <div class="hud-card">
+              <span class="hud-label">ACTIVE MISSIONS</span>
+              <span id="hud-missions" class="hud-metric">--</span>
+            </div>
+            <div class="hud-card">
+              <span class="hud-label">MEMORY FACTS</span>
+              <span id="hud-facts" class="hud-metric">--</span>
+            </div>
+            <div class="hud-card">
+              <span class="hud-label">VOICE PIPELINE</span>
+              <span id="hud-voice" class="hud-metric">Low Latency</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="cards-grid">
+          <div class="card stat-card">
+            <div class="stat-icon">💚</div>
+            <div class="stat-body">
+              <div class="stat-label">STATUS</div>
+              <div id="sysStatus" class="stat-value">Checking…</div>
+            </div>
+          </div>
+          <div class="card stat-card">
+            <div class="stat-icon">🧠</div>
+            <div class="stat-body">
+              <div class="stat-label">LLM ENGINE</div>
+              <div id="sysLLM" class="stat-value">—</div>
+            </div>
+          </div>
+          <div class="card stat-card">
+            <div class="stat-icon">🔧</div>
+            <div class="stat-body">
+              <div class="stat-label">TOOLS & FACTS</div>
+              <div id="sysTools" class="stat-value">—</div>
+            </div>
+          </div>
+          <div class="card stat-card">
+            <div class="stat-icon">📡</div>
+            <div class="stat-body">
+              <div class="stat-label">DEVICE NODE</div>
+              <div id="sysDevice" class="stat-value">—</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>🔄 Cross-Device Sync & State Handoff</h3>
+          <div class="toolbar">
+            <button id="syncRefreshBtn" class="mini-action">↻ Check Status</button>
+            <button id="syncPullBtn" class="mini-action">⬇ Export Bundle</button>
+          </div>
+          <div id="syncStatus" class="detail-body">
+            <div class="empty-state">Click "Check Status" to inspect sync state.</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>🧠 Persistent Memory Ledger</h3>
+          <div class="toolbar">
+            <button id="memRefreshBtn" class="mini-action">↻ Refresh Memory</button>
+            <button id="memClearBtn" class="mini-action danger">🗑 Clear Session Turns</button>
+          </div>
+          <div id="memBody" class="detail-body">
+            <div class="empty-state">Click "Refresh Memory" to load stored facts.</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>🔒 Security & Device Pairing</h3>
+          <div class="form-row">
+            <input id="pinInput" type="password" placeholder="Enter PIN / Code" maxlength="8"/>
+            <button id="pinVerifyBtn" class="action-btn small">Verify / Approve</button>
+          </div>
+          <div id="pinResult" class="result-box" style="display:none"></div>
+        </div>
+
+        <div class="card">
+          <h3>📋 Self-Inspection & Diagnostics</h3>
+          <div class="toolbar">
+            <button id="diagRefreshBtn" class="mini-action">↻ Run Full Diagnostics</button>
+          </div>
+          <div id="diagBody" class="detail-body">
+            <div class="empty-state">Click "Run Full Diagnostics" to verify all subsystems.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
 </div>
 <div id="toasts"></div>
-<script src="/ui/app.js?v=9"></script>
+<script src="/ui/app.js?v=25"></script>
 </body>
 </html>

@@ -105,11 +105,17 @@ class Gateway:
         noise_floor = 300.0
         log.info("voice gateway sleeping - say '%s'", "/".join(wake_mod.WAKE_PHRASES))
 
+        spotter = wake_mod.get_spotter()
         while not self._stop_evt.is_set():
             try:
                 frame = self.audio_q.get(timeout=1.0)
             except Exception:
                 continue
+
+            # Phase 2: Energy VAD pre-filter to save CPU
+            if not spotter.has_voice_energy(frame) and self.state == "sleeping":
+                continue
+
             kind, text = stream.feed(frame)
             if not text:
                 continue
@@ -212,6 +218,10 @@ class Gateway:
                 continue
             lvl = self._rms(frame)
             noise_floor = 0.9 * noise_floor + 0.1 * lvl
+            # Barge-in: if user starts speaking while TTS is playing, interrupt TTS immediately
+            if self.speaker.is_speaking and lvl > max(500.0, noise_floor * 2.0):
+                self.barge_in_local()
+
             kind, text = stream.feed(frame)
             if not text:
                 continue
@@ -237,6 +247,29 @@ class Gateway:
 
     def _run_local_command(self, text: str) -> None:
         """Deterministic/agent execution with spoken result (worker thread)."""
+        # Security Gate: verify voiceprint if enrolled and security active
+        try:
+            from ..security import voiceprint
+            if voiceprint.is_enrolled() and voiceprint.is_locked_out():
+                remaining = voiceprint.get_lockout_seconds_remaining()
+                self.say_local(f"Voice security locked. Try again in {remaining} seconds or verify PIN.")
+                return
+        except Exception:
+            pass
+
+        # Voice Fast-Path: evaluate instant/offline commands in <100ms without LLM
+        try:
+            from ..fastlane import fast_command
+            from ..llm import _offline_parse
+            from ..brain import _fast_path
+
+            instant = fast_command(text, surface="voice") or _fast_path(text) or _offline_parse(text)
+            if instant is not None:
+                self.say_local(instant)
+                bus.publish("voice.command", {"text": text, "reply": instant})
+                return
+        except Exception:
+            pass
 
         def worker() -> None:
             try:

@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EVO — JARVIS Autonomous Command Center</title>
+  <style>
+    :root {
+      --bg: #07090e;
+      --card-bg: rgba(14, 20, 32, 0.85);
+      --card-border: rgba(30, 48, 80, 0.6);
+      --cyan: #00e5ff;
+      --cyan-glow: rgba(0, 229, 255, 0.25);
+      --gold: #ffd600;
+      --green: #00e676;
+      --red: #ff1744;
+      --text: #e2e8f0;
+      --text-dim: #94a3b8;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; }
+    body {
+      background: radial-gradient(circle at 50% 0%, #111b2e 0%, var(--bg) 80%);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 24px;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--card-border);
+      margin-bottom: 24px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .brand-title {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: 2px;
+      color: var(--cyan);
+      text-shadow: 0 0 10px var(--cyan-glow);
+    }
+    .brand-sub {
+      font-size: 12px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    .header-actions {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+    .badge {
+      font-size: 11px;
+      padding: 4px 10px;
+      border-radius: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .badge-cyan { background: rgba(0, 229, 255, 0.15); color: var(--cyan); border: 1px solid rgba(0, 229, 255, 0.3); }
+    .badge-gold { background: rgba(255, 214, 0, 0.15); color: var(--gold); border: 1px solid rgba(255, 214, 0, 0.3); }
+    .badge-green { background: rgba(0, 230, 118, 0.15); color: var(--green); border: 1px solid rgba(0, 230, 118, 0.3); }
+    .btn-kill {
+      background: linear-gradient(135deg, #d50000, #ff1744);
+      color: #fff;
+      border: none;
+      padding: 8px 18px;
+      border-radius: 8px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      cursor: pointer;
+      box-shadow: 0 0 16px rgba(255, 23, 68, 0.4);
+      transition: all 0.2s ease;
+    }
+    .btn-kill:hover { transform: scale(1.02); box-shadow: 0 0 24px rgba(255, 23, 68, 0.7); }
+    
+    /* Metrics Row */
+    .metrics-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .metric-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 16px 20px;
+      backdrop-filter: blur(10px);
+    }
+    .metric-label { font-size: 11px; text-transform: uppercase; color: var(--text-dim); letter-spacing: 1px; margin-bottom: 6px; }
+    .metric-val { font-size: 24px; font-weight: 700; color: #fff; }
+    .val-gold { color: var(--gold); }
+    .val-cyan { color: var(--cyan); }
+    .val-green { color: var(--green); }
+
+    /* Dashboard Grid */
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 24px;
+    }
+    @media (max-width: 960px) { .dashboard-grid { grid-template-columns: 1fr; } }
+    
+    .panel {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 14px;
+      padding: 20px;
+      margin-bottom: 24px;
+      backdrop-filter: blur(10px);
+    }
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      padding-bottom: 10px;
+    }
+    .panel-title { font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px; color: var(--cyan); }
+
+    /* Approval Cards */
+    .approval-card {
+      background: rgba(20, 30, 48, 0.6);
+      border: 1px solid rgba(0, 229, 255, 0.2);
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin-bottom: 12px;
+    }
+    .approval-title { font-size: 14px; font-weight: 600; color: #fff; margin-bottom: 6px; }
+    .approval-meta { font-size: 11px; color: var(--text-dim); margin-bottom: 10px; }
+    .approval-note { font-size: 12px; line-height: 1.5; color: #cbd5e1; background: rgba(0,0,0,0.3); padding: 10px; border-radius: 6px; margin-bottom: 12px; }
+    .approval-actions { display: flex; gap: 8px; justify-content: flex-end; }
+    .btn-action {
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      border: 1px solid transparent;
+    }
+    .btn-approve { background: rgba(0, 230, 118, 0.2); border-color: var(--green); color: var(--green); }
+    .btn-approve:hover { background: var(--green); color: #000; }
+    .btn-reject { background: rgba(255, 23, 68, 0.2); border-color: var(--red); color: var(--red); }
+    .btn-reject:hover { background: var(--red); color: #fff; }
+
+    /* Intelligence List */
+    .intel-item {
+      padding: 10px 12px;
+      border-left: 3px solid var(--cyan);
+      background: rgba(0,0,0,0.25);
+      margin-bottom: 8px;
+      border-radius: 0 6px 6px 0;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    .intel-item.caution { border-left-color: var(--gold); }
+    .intel-item.success { border-left-color: var(--green); }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="brand">
+      <div>
+        <div class="brand-title">⚡ JARVIS MISSION CONTROL</div>
+        <div class="brand-sub">EVO MK2 • 13-Phase Autonomous Cognitive Engine</div>
+      </div>
+    </div>
+    <div class="header-actions">
+      <span class="badge badge-cyan" id="badge-consent">Consent: Assist</span>
+      <span class="badge badge-gold" id="badge-trust">Trust: 1.0</span>
+      <span class="badge badge-green" id="badge-security">Security: 100%</span>
+      <button class="btn-kill" onclick="triggerKillSwitch()">🛑 STOP EVERYTHING</button>
+    </div>
+  </header>
+
+  <div class="metrics-row">
+    <div class="metric-card">
+      <div class="metric-label">7-Day Revenue</div>
+      <div class="metric-val val-gold" id="metric-revenue">$0.00</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Pending Approvals</div>
+      <div class="metric-val val-cyan" id="metric-approvals">0</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Security Health</div>
+      <div class="metric-val val-green" id="metric-security">100%</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Session Screen Time</div>
+      <div class="metric-val" id="metric-time">0m</div>
+    </div>
+  </div>
+
+  <div class="dashboard-grid">
+    <div>
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Human-in-the-Loop Approval Queue</span>
+          <span class="badge badge-cyan" id="queue-count">0 pending</span>
+        </div>
+        <div id="approvals-container">
+          <div style="color: var(--text-dim); font-size: 13px; text-align: center; padding: 20px;">
+            Queue is clear. No autonomous actions currently awaiting approval.
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Proactive Intelligence & Dot Connector</span>
+        </div>
+        <div id="proactive-container">
+          <div class="intel-item">Proactive intelligence loop scanning calendar, emails, and market opportunities...</div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Connected Domains (13/13)</span>
+        </div>
+        <div style="font-size: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+          <div><span style="color: var(--green);">●</span> 1. Credential Vault</div>
+          <div><span style="color: var(--green);">●</span> 2. Persistent Browser</div>
+          <div><span style="color: var(--green);">●</span> 3. Email & Comms</div>
+          <div><span style="color: var(--green);">●</span> 4. Freelance Platforms</div>
+          <div><span style="color: var(--green);">●</span> 5. Calendar Intel</div>
+          <div><span style="color: var(--green);">●</span> 6. Knowledge & Vault</div>
+          <div><span style="color: var(--green);">●</span> 7. Research Engine</div>
+          <div><span style="color: var(--green);">●</span> 8. Digital Security</div>
+          <div><span style="color: var(--green);">●</span> 9. Wellness Tracker</div>
+          <div><span style="color: var(--green);">●</span> 10. JARVIS Brain</div>
+          <div><span style="color: var(--green);">●</span> 11. Approval Queue</div>
+          <div><span style="color: var(--green);">●</span> 12. &lt;10ms Kill Switch</div>
+          <div><span style="color: var(--green);">●</span> 13. Strategy Learner</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Quick Actions</span>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <button class="btn-action btn-approve" onclick="fetch('/api/autonomy/stats').then(r=>r.json()).then(renderStats)">↻ Refresh Live Status</button>
+          <a href="/" style="text-decoration: none;"><button class="btn-action" style="width: 100%; background: rgba(255,255,255,0.08); color: var(--text);">Open Main Chat Console</button></a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    async function loadStats() {
+      try {
+        const res = await fetch('/api/autonomy/stats');
+        const d = await res.json();
+        if (d.ok) {
+          renderStats(d);
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    function renderStats(d) {
+      document.getElementById('badge-consent').textContent = 'Consent: ' + (d.consent_level || 'assist');
+      document.getElementById('badge-trust').textContent = 'Trust: ' + (d.trust_score || 1.0);
+      document.getElementById('metric-revenue').textContent = '$' + (d.revenue_stats?.total_revenue || 0).toFixed(2);
+      document.getElementById('metric-security').textContent = Math.round((d.security_score || 1.0) * 100) + '%';
+      if (d.screen_time) {
+        document.getElementById('metric-time').textContent = Math.round(d.screen_time.current_session_minutes) + 'm';
+      }
+      if (d.proactive_alerts && d.proactive_alerts.length > 0) {
+        const cont = document.getElementById('proactive-container');
+        cont.innerHTML = d.proactive_alerts.map(a => '<div class="intel-item">' + a + '</div>').join('');
+      }
+    }
+
+    async function loadApprovals() {
+      try {
+        const res = await fetch('/api/autonomy/approvals');
+        const d = await res.json();
+        const container = document.getElementById('approvals-container');
+        const count = document.getElementById('queue-count');
+        const metricApp = document.getElementById('metric-approvals');
+        const list = d.approvals || [];
+        count.textContent = list.length + ' pending';
+        metricApp.textContent = list.length;
+
+        if (list.length === 0) {
+          container.innerHTML = '<div style="color: var(--text-dim); font-size: 13px; text-align: center; padding: 20px;">Queue is clear. No autonomous actions currently awaiting approval.</div>';
+          return;
+        }
+
+        container.innerHTML = list.map(item => {
+          const act = item.action || {};
+          return `
+            <div class="approval-card">
+              <div class="approval-title">${act.title || act.type || 'Proposed Action'}</div>
+              <div class="approval-meta">Platform: ${act.platform || 'General'} • Target: ${act.client_id || act.target || 'Client'}</div>
+              <div class="approval-note">${act.cover_note || act.details || JSON.stringify(act)}</div>
+              <div class="approval-actions">
+                <button class="btn-action btn-reject" onclick="rejectItem('${item.id}')">✗ Reject</button>
+                <button class="btn-action btn-approve" onclick="approveItem('${item.id}')">✓ Approve & Execute</button>
+              </div>
+            </div>
+          `;
+        }).join('');
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    async function approveItem(id) {
+      await fetch('/api/autonomy/approve', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({id})
+      });
+      loadApprovals();
+      loadStats();
+    }
+
+    async function rejectItem(id) {
+      await fetch('/api/autonomy/reject', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({id, reason: 'Rejected from mission control'})
+      });
+      loadApprovals();
+      loadStats();
+    }
+
+    async function triggerKillSwitch() {
+      if (confirm('ENGAGE EMERGENCY STOP?\n\nThis will instantly halt all autonomous engines, close active browser instances, and revert permissions.')) {
+        const res = await fetch('/api/autonomy/kill', {method: 'POST'});
+        const d = await res.json();
+        alert('EMERGENCY STOP EXECUTED (' + (d.latency_ms || 0) + 'ms). All autonomous processes halted.');
+        loadStats();
+      }
+    }
+
+    loadStats();
+    loadApprovals();
+    setInterval(loadStats, 10000);
+    setInterval(loadApprovals, 10000);
+  </script>
+</body>
+</html>

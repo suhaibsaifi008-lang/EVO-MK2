@@ -211,6 +211,7 @@ class TestRaceStall:
     def test_winner_stalling_mid_stream_terminates(self, monkeypatch, tmp_path):
         """Regression: race winner that stalls after 1 token must not hang."""
         from mk2 import llm as L
+        import time as _t
 
         provs = [
             {"name": "freellmapi", "kind": "openai", "base": "http://f.test/v1",
@@ -225,7 +226,7 @@ class TestRaceStall:
 
         def fake_urlopen(req, timeout=30):
             body = req.data.decode()
-            if "gpt-oss-120b" in body:
+            if L.PRIMARY_LADDER[0] in body or "gpt-oss-120b" in body:
                 class S1:
                     def __enter__(self):
                         return self

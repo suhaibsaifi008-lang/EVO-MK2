@@ -1,4 +1,4 @@
-﻿"""EVO MK2 configuration: env-first, typed, zero magic.
+"""EVO MK2 configuration: env-first, typed, zero magic.
 
 Secrets live in .env (git-ignored) or the system credential store later.
 Everything else is env-overridable with sane defaults.
@@ -37,13 +37,17 @@ class Settings:
     user_address: str = field(default_factory=lambda: _s("EVO_USER_ADDRESS", "sir"))
 
     # model providers (ordered failover)
-    openai_key: str = field(default_factory=lambda: _s("JARVIS_OPENAI_API_KEY"))
+    anthropic_key: str = field(default_factory=lambda: _s("ANTHROPIC_API_KEY") or _s("JARVIS_ANTHROPIC_KEY", ""))
+    anthropic_base: str = field(default_factory=lambda: _s("ANTHROPIC_BASE_URL", "https://api.anthropic.com"))
+    anthropic_model: str = field(default_factory=lambda: _s("ANTHROPIC_MODEL", "claude-sonnet-4-6"))
+    api_key: str = field(default_factory=lambda: _s("EVO_API_KEY", ""))
+    openai_key: str = field(default_factory=lambda: _s("JARVIS_OPENAI_API_KEY") or _s("OPENAI_API_KEY", ""))
     openai_base: str = field(default_factory=lambda: _s("JARVIS_OPENAI_BASE_URL", "https://api.openai.com/v1"))
-    openai_model: str = field(default_factory=lambda: _s("JARVIS_OPENAI_MODEL", "gpt-4o-mini"))
+    openai_model: str = field(default_factory=lambda: _s("JARVIS_OPENAI_MODEL", "claude-sonnet-4-6"))
     ollama_base: str = field(default_factory=lambda: _s("JARVIS_OLLAMA_URL", "http://127.0.0.1:11434/v1"))
     ollama_model: str = field(default_factory=lambda: _s("JARVIS_OLLAMA_MODEL", ""))
-    fast_model: str = field(default_factory=lambda: _s("JARVIS_MODEL_FAST"))
-    reasoning_model: str = field(default_factory=lambda: _s("JARVIS_MODEL_REASONING"))
+    fast_model: str = field(default_factory=lambda: _s("JARVIS_MODEL_FAST", "claude-haiku-4-5"))
+    reasoning_model: str = field(default_factory=lambda: _s("JARVIS_MODEL_REASONING", "claude-sonnet-4-6"))
 
     # realtime voice
     gemini_key: str = field(default_factory=lambda: _s("GEMINI_API_KEY") or _s("JARVIS_GEMINI_KEY"))

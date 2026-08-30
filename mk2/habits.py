@@ -48,6 +48,21 @@ def scan() -> list[dict]:
     return proposals
 
 
+def propose_habit(pattern: dict) -> str:
+    """Turn a detected pattern into a specific, actionable proposal."""
+    ptype = pattern.get("type", "")
+    if ptype == "app_launch" or pattern.get("tool") == "open_app":
+        app = pattern.get("app") or pattern.get("target", "this application")
+        count = pattern.get("count", 3)
+        usual_time = pattern.get("usual_time", "this time")
+        return f"You have launched {app} {count} times recently around {usual_time}. Shall I schedule it to open automatically?"
+    elif ptype == "tool_sequence":
+        tools_seq = pattern.get("tools", "")
+        name = pattern.get("suggested_name", "daily_routine")
+        return f"I noticed you run [{tools_seq}] in sequence frequently. Would you like me to save this as a '{name}' workflow?"
+    return f"I noticed a repeating pattern: {pattern.get('detail', '')}. Would you like me to automate it?"
+
+
 def _workflow_yaml_for(tool: str, target: str, name_hint: str) -> str:
     step = {"tool": tool}
     if tool == "open_app":

@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>EVO MK2 — Cinematic Desktop AI Assistant</title>
+<meta name="description" content="EVO MK2: An AI that sees, thinks, and acts. Wakeup word: EVO."/>
+<link rel="stylesheet" href="/ui/landing.css?v=1"/>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='%23050505' stroke='%23ffaa30' stroke-width='6'/><circle cx='50' cy='50' r='20' fill='%23ffaa30'/></svg>"/>
+</head>
+<body>
+
+<!-- Magnetic Glowing Cursor -->
+<div id="cursor-ring" class="cursor-ring"></div>
+<div id="cursor-dot" class="cursor-dot"></div>
+
+<!-- Background Noise and Atmospheric Glows -->
+<div class="bg-noise"></div>
+<div class="bg-vignette"></div>
+<div class="bg-radial-glow"></div>
+
+<!-- Top Navigation Bar -->
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-orb"></span>
+    <b>EVO <span class="brand-v2">MK2</span></b>
+  </div>
+  <div class="wake-badge" id="wakeBadge" title="Default Wake Word">
+    <span class="wake-pulse"></span>
+    <span class="wake-label">WAKE WORD:</span>
+    <b class="wake-word">"EVO"</b>
+  </div>
+  <nav class="top-nav">
+    <a href="#slide-0" class="nav-link active" data-index="0">01 EVO</a>
+    <a href="#slide-1" class="nav-link" data-index="1">02 CORE</a>
+    <a href="#slide-2" class="nav-link" data-index="2">03 WAKE</a>
+    <a href="#slide-3" class="nav-link" data-index="3">04 BRAIN</a>
+    <a href="#slide-6" class="nav-link" data-index="6">07 START</a>
+  </nav>
+  <div class="topbar-actions">
+    <a href="/" class="btn-console" title="Open EVO Web Console">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17l6-6-6-6M12 19h8"/></svg>
+      <span>CONSOLE</span>
+    </a>
+  </div>
+</header>
+
+<!-- Right-Side Vertical Energy Rail -->
+<aside class="energy-rail" id="energyRail">
+  <div class="rail-track"></div>
+  <div class="rail-carriage" id="railCarriage"></div>
+  
+  <div class="rail-node active" data-index="0">
+    <div class="node-label"><span>01 —</span> EVO<div class="laser-trail"></div></div>
+    <div class="node-dot"></div>
+  </div>
+  <div class="rail-node" data-index="1">
+    <div class="node-label"><span>02 —</span> CORE<div class="laser-trail"></div></div>
+    <div class="node-dot"></div>
+  </div>
+  <div class="rail-node" data-index="2">
+    <div class="node-label"><span>03 —</span> WAKEUP<div class="laser-trail"></div></div>
+    <div class="node-dot"></div>
+  </div>
+  <div class="rail-node" data-index="3">
+    <div class="node-label"><span>04 —</span> BRAIN<div class="laser-trail"></div></div>
+    <div class="node-dot"></div>
+  </div>
+  <div class="rail-node" data-index="4">
+    <div class="node-label"><span>05 —</span> MISSIONS<div class="laser-trail"></div></div>
+    <div class="node-dot"></div>
+  </div>
+  <div class="rail-node" data-index="5">
+    <div class="node-label"><span>06 —</span> CONTROL<div class="laser-trail"></div></div>
+    <div class="node-dot"></div>
+  </div>
+  <div class="rail-node" data-index="6">
+    <div class="node-label"><span>07 —</span> START<div class="laser-trail"></div></div>
+    <div class="node-dot"></div>
+  </div>
+  <div class="rail-node" data-index="7">
+    <div class="node-label"><span>08 —</span> LAUNCH<div class="laser-trail"></div></div>
+    <div class="node-dot"></div>
+  </div>
+</aside>
+
+<!-- Slide Pages Container -->
+<main class="page-container" id="pageContainer">
+
+  <!-- ===== SLIDE 0: HERO (01 — EVO) ===== -->
+  <section class="slide-page active" id="slide-0">
+    <div class="slide-content text-center">
+      <div class="hero-chip">AUTONOMOUS DESKTOP INTELLIGENCE</div>
+      <h1 class="title-hero">EVO MK2</h1>
+      <h2 class="subtitle-hero">AN AI THAT SEES. THINKS. ACTS.</h2>
+      <p class="body-hero">
+        Your cinematic personal desktop AI assistant. Powered by Claude Sonnet 4.6, sub-second neural voice, screen-aware vision, and native PC control.
+      </p>
+
+      <div class="wake-cta-box" id="heroWakeBox">
+        <div class="wake-mic-icon">🎙</div>
+        <div class="wake-cta-text">
+          <span class="wake-cta-sub">SAY THE WAKEUP WORD</span>
+          <span class="wake-cta-main">"EVO"</span>
+        </div>
+        <button class="btn-wake-test mini" id="heroTestWakeBtn">TEST LIVE</button>
+      </div>
+
+      <div class="hero-actions">
+        <a href="/" class="btn-primary">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          <span>OPEN WEB CONSOLE</span>
+        </a>
+        <a href="/voice/client/" target="_blank" class="btn-secondary">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>
+          <span>VOICE CLIENT</span>
+        </a>
+      </div>
+
+      <div class="scroll-indicator" id="scrollIndicator">
+        <span>SCROLL TO ENTER</span>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== SLIDE 1: CORE (02 — CORE) ===== -->
+  <section class="slide-page" id="slide-1">
+    <div class="slide-content">
+      <div class="card-modal">
+        <div class="card-tag">SYSTEM OVERVIEW</div>
+        <h2 class="title-section">What is EVO MK2?</h2>
+        <p class="body-text text-white">
+          EVO MK2 is a Windows desktop AI assistant that combines voice-first streaming conversation, autonomous multi-step planning, screen-aware vision, PC automation, and local offline resilience.
+        </p>
+        <p class="body-text text-amber">
+          It doesn't just answer commands. It understands visual context, executes PowerShell tools, manages long-term SQLite semantic memory, and orchestrates autonomous swarm workflows.
+        </p>
+
+        <div class="pills-row">
+          <span class="pill">VOICE</span>
+          <span class="pill-divider">|</span>
+          <span class="pill">AUTONOMY</span>
+          <span class="pill-divider">|</span>
+          <span class="pill">VISION</span>
+          <span class="pill-divider">|</span>
+          <span class="pill">SWARMS</span>
+          <span class="pill-divider">|</span>
+          <span class="pill">SMART HOME</span>
+          <span class="pill-divider">|</span>
+          <span class="pill">SELF-HEALING</span>
+        </div>
+
+        <div class="stats-row">
+          <div class="stat-pill">
+            <span class="stat-num">&lt;800ms</span>
+            <span class="stat-lbl">Voice Latency</span>
+          </div>
+          <div class="stat-pill">
+            <span class="stat-num">311</span>
+            <span class="stat-lbl">Health Checks</span>
+          </div>
+          <div class="stat-pill">
+            <span class="stat-num">100%</span>
+            <span class="stat-lbl">Local Privacy</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== SLIDE 2: WAKEUP (03 — WAKEUP) ===== -->
+  <section class="slide-page" id="slide-2">
+    <div class="slide-content text-center">
+      <div class="card-modal text-center">
+        <div class="card-tag">ON-DEVICE KEYWORD SPOTTING</div>
+        <h2 class="title-section">Wakeup Word: "EVO"</h2>
+        <p class="body-text text-white">
+          EVO sleeps silently in the background with zero cloud lag and ultra-low CPU consumption.
+        </p>
+        <p class="body-text text-amber">
+          Say <b>"EVO"</b> or <b>"Hey EVO"</b> to instantly activate the conversational engine.
+        </p>
+
+        <!-- Interactive Browser Wake Word Tester -->
+        <div class="wake-tester" id="wakeTester">
+          <div class="tester-ring-wrap">
+            <canvas id="testerCanvas" width="160" height="160"></canvas>
+            <div class="tester-center" id="testerStatusText">
+              <span class="tester-icon">🎙</span>
+              <span class="tester-state">READY</span>
+            </div>
+          </div>
+          <button class="btn-primary" id="startWakeTestBtn">
+            <span>START MIC TEST</span>
+          </button>
+          <div class="tester-feedback" id="testerFeedback">
+            Click to start mic, then say "EVO" or "Hey EVO"
+          </div>
+        </div>
+
+        <div class="triggers-list">
+          <span class="trigger-item">✓ "EVO"</span>
+          <span class="trigger-item">✓ "Hey EVO"</span>
+          <span class="trigger-item">✓ "OK EVO"</span>
+          <span class="trigger-item">✓ "Wake up EVO"</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== SLIDE 3: BRAIN (04 — BRAIN) ===== -->
+  <section class="slide-page" id="slide-3">
+    <div class="slide-content">
+      <div class="card-modal wide">
+        <div class="card-tag">COGNITIVE ARCHITECTURE</div>
+        <h2 class="title-section">Multi-Tiered Brain Ladder</h2>
+        <p class="body-text text-white">
+          EVO routes every turn through a 4-tier reasoning ladder for ultra-fast latency and deep logical precision.
+        </p>
+
+        <div class="brain-grid">
+          <div class="brain-card">
+            <div class="brain-tier">TIER 1 — PRIMARY</div>
+            <div class="brain-model">Claude Sonnet 4.6</div>
+            <div class="brain-desc">Deep goal decomposition, planning DAGs, code writing, and tool coordination.</div>
+          </div>
+          <div class="brain-card">
+            <div class="brain-tier">TIER 2 — FAST VOICE</div>
+            <div class="brain-model">Claude Haiku / Ollama</div>
+            <div class="brain-desc">Sub-second conversational turns and streaming sentence emission.</div>
+          </div>
+          <div class="brain-card">
+            <div class="brain-tier">TIER 3 — OFFLINE</div>
+            <div class="brain-model">Local Ollama / Qwen</div>
+            <div class="brain-desc">Zero-internet offline fallback for local PC tools and device control.</div>
+          </div>
+          <div class="brain-card">
+            <div class="brain-tier">TIER 4 — NEURAL VOICE</div>
+            <div class="brain-model">Piper + SAPI Hybrid</div>
+            <div class="brain-desc">Instant 80-character chunked speech playback with zero pause tax.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== SLIDE 4: MISSIONS (05 — MISSIONS) ===== -->
+  <section class="slide-page" id="slide-4">
+    <div class="slide-content">
+      <div class="card-modal">
+        <div class="card-tag">AUTONOMY & SWARMS</div>
+        <h2 class="title-section">Autonomous Multi-Agent Swarms</h2>
+        <p class="body-text text-white">
+          Delegate complex multi-hour objectives to EVO. The autonomy engine breaks missions into verified steps, delegating tasks across specialized agents.
+        </p>
+
+        <div class="swarm-flow">
+          <div class="flow-step">
+            <div class="flow-num">01</div>
+            <div class="flow-text"><b>Decomposition</b><span>Goal parsed into DAG subtasks</span></div>
+          </div>
+          <div class="flow-step">
+            <div class="flow-num">02</div>
+            <div class="flow-text"><b>Swarm Delegation</b><span>Subagents execute in parallel</span></div>
+          </div>
+          <div class="flow-step">
+            <div class="flow-num">03</div>
+            <div class="flow-text"><b>Adaptive Recovery</b><span>Auto-switches tools on error</span></div>
+          </div>
+          <div class="flow-step">
+            <div class="flow-num">04</div>
+            <div class="flow-text"><b>Learning Loop</b><span>Strategy saved to library</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== SLIDE 5: CONTROL (06 — CONTROL) ===== -->
+  <section class="slide-page" id="slide-5">
+    <div class="slide-content">
+      <div class="card-modal">
+        <div class="card-tag">NATIVE CAPABILITIES</div>
+        <h2 class="title-section">PC Automation & Smart Home</h2>
+        <p class="body-text text-white">
+          Direct hardware and software bridge. EVO operates your local Windows environment and external smart IoT devices.
+        </p>
+
+        <div class="control-grid">
+          <div class="ctrl-item">
+            <div class="ctrl-icon">💻</div>
+            <div class="ctrl-body">
+              <b>Windows PC Control</b>
+              <span>App launch, PowerShell execution, screenshot analysis, clipboard sync.</span>
+            </div>
+          </div>
+          <div class="ctrl-item">
+            <div class="ctrl-icon">🏠</div>
+            <div class="ctrl-body">
+              <b>Home Assistant</b>
+              <span>Lights, room scenes, climate control, temperature, relay toggles.</span>
+            </div>
+          </div>
+          <div class="ctrl-item">
+            <div class="ctrl-icon">🧠</div>
+            <div class="ctrl-body">
+              <b>Persistent Memory</b>
+              <span>SQLite facts ledger, user personality profile, relationship depth tracking.</span>
+            </div>
+          </div>
+          <div class="ctrl-item">
+            <div class="ctrl-icon">🛡</div>
+            <div class="ctrl-body">
+              <b>Continuous Healing</b>
+              <span>Automatic log pruning, error circuit breakers, self-check test passes.</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== SLIDE 6: QUICKSTART (07 — START) ===== -->
+  <section class="slide-page" id="slide-6">
+    <div class="slide-content">
+      <div class="card-modal wide">
+        <div class="card-tag">DEVELOPER QUICKSTART</div>
+        <h2 class="title-section">How to Start EVO MK2</h2>
+        
+        <div class="terminal-scroll">
+          <p class="step-heading">STEP 01 — CLONE REPOSITORY</p>
+          <div class="terminal-box">
+            <code>git clone https://github.com/suhaibsaifi008-lang/EVO-MK2.git</code>
+            <button class="btn-copy" data-copy="git clone https://github.com/suhaibsaifi008-lang/EVO-MK2.git">COPY</button>
+          </div>
+
+          <p class="step-heading">STEP 02 — ENTER DIRECTORY & VIRTUAL ENVIRONMENT</p>
+          <div class="terminal-box">
+            <code>cd EVO-MK2<br/>python -m venv .venv<br/>.\.venv\Scripts\Activate.ps1</code>
+            <button class="btn-copy" data-copy="cd EVO-MK2; python -m venv .venv; .\.venv\Scripts\Activate.ps1">COPY</button>
+          </div>
+
+          <p class="step-heading">STEP 03 — INSTALL DEPENDENCIES</p>
+          <div class="terminal-box">
+            <code>pip install -r requirements.txt</code>
+            <button class="btn-copy" data-copy="pip install -r requirements.txt">COPY</button>
+          </div>
+
+          <p class="step-heading">STEP 04 — CONFIGURE .ENV (WAKEUP WORD: EVO)</p>
+          <div class="terminal-box">
+            <code>ANTHROPIC_API_KEY=your_key<br/>EVO_WAKE=1<br/>EVO_WAKE_PHRASES=evo,hey evo,ok evo,wake up evo</code>
+            <button class="btn-copy" data-copy="ANTHROPIC_API_KEY=your_key&#10;EVO_WAKE=1&#10;EVO_WAKE_PHRASES=evo,hey evo,ok evo,wake up evo">COPY</button>
+          </div>
+
+          <p class="step-heading">STEP 05 — LAUNCH EVO MK2</p>
+          <div class="terminal-box">
+            <code>python -m mk2.kernel</code>
+            <button class="btn-copy" data-copy="python -m mk2.kernel">COPY</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== SLIDE 7: LAUNCH (08 — LAUNCH) ===== -->
+  <section class="slide-page" id="slide-7">
+    <div class="slide-content text-center">
+      <div class="card-modal text-center">
+        <div class="card-tag">SYSTEMS READY</div>
+        <h2 class="title-section">Experience EVO MK2</h2>
+        <p class="body-text text-white">
+          All systems operational. The next-generation autonomous desktop companion is ready for command.
+        </p>
+
+        <div class="launch-grid">
+          <a href="/" class="launch-card">
+            <div class="launch-icon">💬</div>
+            <div class="launch-title">Web Console</div>
+            <div class="launch-sub">Full tabbed chat, swarms & tools</div>
+          </a>
+          <a href="/voice/client/" target="_blank" class="launch-card">
+            <div class="launch-icon">🎙</div>
+            <div class="launch-title">Voice Client</div>
+            <div class="launch-sub">WebRTC sub-second voice link</div>
+          </a>
+        </div>
+
+        <div class="live-telemetry-badge" id="liveTelemetryBadge">
+          <span class="live-dot"></span>
+          <span id="liveStatusText">CONNECTING TO KERNEL…</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<!-- Bottom-Left Floating Social & Live Bar -->
+<footer class="bottom-bar">
+  <div class="social-links">
+    <a href="https://github.com/suhaibsaifi008-lang/EVO-MK2" target="_blank" rel="noopener noreferrer" class="social-icon" title="GitHub Repository">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+    </a>
+    <a href="https://discord.gg" target="_blank" rel="noopener noreferrer" class="social-icon" title="Discord Community">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.028zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>
+    </a>
+  </div>
+  <div class="kernel-ping" id="kernelPing">
+    <span class="ping-dot"></span>
+    <span id="pingText">127.0.0.1:8421</span>
+  </div>
+</footer>
+
+<div id="toastContainer" class="toast-container"></div>
+
+<script src="/ui/landing.js?v=1"></script>
+</body>
+</html>

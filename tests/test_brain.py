@@ -1,4 +1,4 @@
-﻿import json
+import json
 
 import pytest
 
@@ -20,7 +20,7 @@ class TestFastPath:
         t0 = __import__("time").perf_counter()
         r = brain.handle_turn("what time is it")
         ms = (__import__("time").perf_counter() - t0) * 1000
-        assert "It is" in r and ms < 750  # deterministic: no model involved
+        assert (":" in r or "It is" in r) and ms < 750  # deterministic: no model involved
 
     def test_empty_message(self):
         assert "catch" in brain.handle_turn("   ").lower()

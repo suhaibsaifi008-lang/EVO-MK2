@@ -55,10 +55,47 @@ def diagnose() -> dict:
     return {"healthy": not issues, "issues": issues, "tests": tests}
 
 
+def _cleanup_old_logs() -> bool:
+    """Prune logs older than 7 days."""
+    try:
+        from .config import LOGS
+        now = time.time()
+        for f in LOGS.glob("*.log*"):
+            if now - f.stat().st_mtime > 7 * 86400:
+                f.unlink(missing_ok=True)
+        return True
+    except Exception:
+        return False
+
+
+def _reset_error_ring() -> bool:
+    try:
+        from . import errlog
+        if hasattr(errlog, "clear"):
+            errlog.clear()
+        return True
+    except Exception:
+        return False
+
+
+AUTO_FIXES = {
+    "disk_space_low": _cleanup_old_logs,
+    "log_overflow": _cleanup_old_logs,
+    "errlog_overflow": _reset_error_ring,
+}
+
+
 def heal(issue: dict) -> bool:
-    """Spawn a dev task that stages (and per toggle, auto-applies) a fix.
-    Same issue signature re-healed at most once per cooldown window."""
+    """Spawn a dev task or run an auto-fix for known operational issues."""
     from . import coder
+
+    if issue["type"] in AUTO_FIXES:
+        try:
+            ok = AUTO_FIXES[issue["type"]]()
+            if ok:
+                return True
+        except Exception:
+            pass
 
     if issue["type"] == "infra":
         return False  # never auto-"fix" an environment problem

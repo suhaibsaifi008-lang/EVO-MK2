@@ -6,8 +6,29 @@ __pycache__/
 .pytest_cache/
 dist/
 build/
+.claude/
 
 # logs & local artifacts
 *.log
 /_*.py
 /test_good.wav
+*.bak
+*.broken
+*.txt
+*.bat
+patch*.py
+fix*.py
+gen*.py
+build_*.py
+apply_*.py
+find_*.py
+do_*.py
+make_*.py
+rebuild_*.py
+remove_*.py
+verify_*.py
+write_*.py
+f.py
+check_*.py
+test_*.py
+!tests/test_*.py

@@ -1,22 +1,116 @@
-﻿"""FastAPI surface: streaming chat, health, memory/audit views, static UI."""
+"""FastAPI surface: streaming chat, health, memory/audit views, static UI."""
 import asyncio
 import json
+import os
 import queue as _queue
 import re
 import threading
 import time
 from collections import deque
 from pathlib import Path
+from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.websockets import WebSocketState
 
 from . import brain, config, db, llm, tools
 
 app = FastAPI(title="EVO MK2")
 UI = Path(config.UI_DIR)
+
+# ------------------------------------------------------------------ API key auth
+
+_LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
+
+
+def _resolve_api_key() -> str | None:
+    key = os.environ.get("EVO_API_KEY", "").strip()
+    if not key:
+        try:
+            key = getattr(config.settings, "api_key", "") or ""
+        except Exception:
+            pass
+    return key.strip() or None
+
+
+def _is_auth_required(request: Request) -> bool:
+    path = str(request.url.path)
+    if path in ("/api/health", "/", "/health", "/favicon.ico"):
+        return False
+    if path.startswith("/ui") or path.startswith("/static") or path.startswith("/voice/client"):
+        return False
+    return True
+
+
+class APIKeyMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        client = (request.client.host if request.client else "") or ""
+        api_key = _resolve_api_key()
+        if api_key and _is_auth_required(request) and client not in _LOCAL_HOSTS:
+            provided = (
+                request.headers.get("x-api-key", "")
+                or request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+                or request.query_params.get("key", "")
+            )
+            if provided != api_key:
+                from fastapi.responses import JSONResponse
+
+                return JSONResponse({"error": "unauthorized"}, status_code=401)
+        return await call_next(request)
+
+
+app.add_middleware(APIKeyMiddleware)
+
+from starlette.middleware.cors import CORSMiddleware
+
+_cors_origins = [o.strip() for o in os.environ.get("EVO_CORS_ORIGINS", "*").split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins or ["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ------------------------------------------------------------------ Timeout & Circuit Breaker
+
+class TimeoutMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path.startswith(("/ws", "/voice")):
+            return await call_next(request)
+        try:
+            return await asyncio.wait_for(call_next(request), timeout=60.0)
+        except asyncio.TimeoutError:
+            from fastapi.responses import JSONResponse
+            return JSONResponse({"error": "request timed out after 60s"}, status_code=504)
+
+
+app.add_middleware(TimeoutMiddleware)
+
+_circuit_open_until: float = 0.0
+_consecutive_llm_failures: int = 0
+_circuit_lock = threading.Lock()
+
+
+def is_circuit_open() -> bool:
+    with _circuit_lock:
+        return time.time() < _circuit_open_until
+
+
+def record_llm_result(ok: bool) -> None:
+    global _circuit_open_until, _consecutive_llm_failures
+    with _circuit_lock:
+        if ok:
+            _consecutive_llm_failures = 0
+            _circuit_open_until = 0.0
+        else:
+            _consecutive_llm_failures += 1
+            if _consecutive_llm_failures >= 5:
+                _circuit_open_until = time.time() + 30.0
 
 from . import events_api as _events  # noqa: E402
 
@@ -73,6 +167,17 @@ def index():
     return FileResponse(UI / "index.html")
 
 
+@app.get("/landing")
+def landing_page():
+    return FileResponse(UI / "landing.html")
+
+
+@app.get("/autonomy")
+def autonomy_dashboard():
+    return FileResponse(UI / "money_dashboard.html")
+
+
+
 @app.get("/face")
 def face():
     """MK2 v0.2: the face lives INSIDE the console now."""
@@ -117,8 +222,221 @@ def health():
 
 @app.post("/api/chat")
 def chat(body: ChatIn) -> dict:
-    reply = brain.handle_turn(body.text)
-    return {"reply": reply}
+    if is_circuit_open():
+        from .fastlane import fast_command
+        from .llm import _offline_parse
+        instant = fast_command(body.text) or _offline_parse(body.text)
+        if instant:
+            return {"reply": instant}
+        raise HTTPException(status_code=503, detail="LLM circuit breaker open (cooling down after repeated failures)")
+    try:
+        reply = brain.handle_turn(body.text)
+        record_llm_result(True)
+        return {"reply": reply}
+    except Exception as exc:
+        record_llm_result(False)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+class ConfirmIn(BaseModel):
+    mission_id: str
+    choice: str = "Proceed"
+
+
+@app.post("/api/confirm")
+def confirm_mission_endpoint(body: ConfirmIn) -> dict:
+    from . import autonomy
+    res = autonomy.get_runner().confirm_mission(body.mission_id, body.choice)
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res.get("speech", "Failed to confirm mission"))
+    return res
+
+
+class AuthPinIn(BaseModel):
+    pin: str
+
+
+@app.post("/api/auth/pin")
+def auth_pin_endpoint(body: AuthPinIn) -> dict:
+    from .security import voiceprint
+    if voiceprint.verify_pin(body.pin):
+        return {"ok": True, "message": "Authentication successful. Security lock cleared."}
+    raise HTTPException(status_code=403, detail="Invalid security PIN.")
+
+
+@app.get("/api/status")
+def get_status_endpoint() -> dict:
+    from . import autonomy, initiative_engine, swarm, user_profile
+    prof = user_profile.get_user_profile()
+    return {
+        "ok": True,
+        "brain": {
+            "role": "primary",
+            "model": config.settings.anthropic_model or config.settings.openai_model,
+            "provider": "anthropic" if config.settings.anthropic_key else "openai",
+        },
+        "voice": {
+            "wake": bool(os.environ.get("EVO_WAKE", "1") == "1"),
+            "voice_v2": bool(os.environ.get("EVO_VOICE_V2", "1") == "1"),
+        },
+        "memory": {
+            "facts": len(db.all_facts(100)),
+            "profile_depth": prof.get("depth_score", 0),
+        },
+        "autonomy": {
+            "missions": len([m for m in autonomy.get_runner().missions.values() if getattr(m, "status", "") in ("running", "planning")]),
+        },
+        "swarms": {
+            "active": len(swarm.list_active_swarms()),
+        },
+        "initiative": {
+            "enabled": bool(os.environ.get("EVO_INITIATIVE", "1") == "1"),
+        },
+    }
+
+
+@app.get("/api/session/state")
+def get_session_state_endpoint() -> dict:
+    """Return compact conversational & memory state for cross-device handoff."""
+    from . import user_profile, autonomy
+    return {
+        "ok": True,
+        "recent_turns": db.recent_messages(14),
+        "facts": db.all_facts(25),
+        "profile": user_profile.get_user_profile(),
+        "active_missions": [
+            {"id": m.id, "goal": m.goal, "status": getattr(m, "status", "")}
+            for m in autonomy.get_runner().missions.values()
+            if getattr(m, "status", "") in ("running", "planning")
+        ],
+    }
+
+
+class SessionImportIn(BaseModel):
+    recent_turns: list[dict] = []
+    facts: list[dict] = []
+
+
+@app.post("/api/session/import")
+def import_session_endpoint(body: SessionImportIn) -> dict:
+    """Import conversational turns and facts from remote device."""
+    imported_turns = db.import_messages(body.recent_turns)
+    imported_facts = 0
+    for fact in body.facts:
+        k = fact.get("key") or fact.get("k")
+        v = fact.get("value") or fact.get("v")
+        if k and v:
+            db.remember_fact(str(k), str(v), source="remote_sync")
+            imported_facts += 1
+    return {"ok": True, "imported_turns": imported_turns, "imported_facts": imported_facts}
+
+
+_pairing_codes: dict[str, dict] = {}
+
+
+class PairRequestIn(BaseModel):
+    device_name: str = "Remote Device"
+
+
+@app.post("/api/pair/request")
+def request_pairing_endpoint(body: PairRequestIn) -> dict:
+    """Request 6-digit device pairing code."""
+    import random
+    from .bus import bus
+    code = f"{random.randint(100000, 999999)}"
+    _pairing_codes[code] = {
+        "expires": time.time() + 300,
+        "device_name": body.device_name,
+        "approved": False,
+    }
+    bus.publish("notify.out", {
+        "kind": "pairing",
+        "text": f"Device '{body.device_name}' requested pairing. Code: {code}. Say 'approve {code}' or use dashboard.",
+    })
+    return {"ok": True, "code": code, "expires_in": 300}
+
+
+class PairApproveIn(BaseModel):
+    code: str
+
+
+@app.post("/api/pair/approve")
+def approve_pairing_endpoint(body: PairApproveIn) -> dict:
+    """Approve a pending device pairing code."""
+    entry = _pairing_codes.get(body.code.strip())
+    if not entry or entry["expires"] < time.time():
+        raise HTTPException(status_code=400, detail="Invalid or expired pairing code.")
+    entry["approved"] = True
+    return {"ok": True, "device_name": entry["device_name"], "message": "Device pairing approved."}
+
+
+@app.get("/api/sync/status")
+def sync_status_endpoint() -> dict:
+    import platform
+    from . import sync
+    return {
+        "ok": True,
+        "device_id": sync.get_device_id(),
+        "device_name": platform.node(),
+    }
+
+
+@app.get("/api/sync/pull")
+def sync_pull_endpoint() -> dict:
+    from . import sync
+    return sync.export_sync_bundle()
+
+
+@app.post("/api/sync/push")
+def sync_push_endpoint(bundle: dict[str, Any]) -> dict:
+    from . import sync
+    res = sync.import_sync_bundle(bundle)
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res.get("error", "Sync import failed"))
+    return res
+
+
+class SwarmDispatchIn(BaseModel):
+    objective: str
+    background: bool = True
+
+
+@app.post("/api/swarm/dispatch")
+def swarm_dispatch_endpoint(body: SwarmDispatchIn) -> dict:
+    from . import swarm
+    return swarm.get_swarm_orchestrator().execute(body.objective, background=body.background)
+
+
+@app.get("/api/swarm/status")
+def swarm_status_endpoint(swarm_id: str = "") -> dict:
+    from . import swarm
+    if swarm_id:
+        info = swarm.get_swarm_execution(swarm_id)
+        if not info:
+            raise HTTPException(status_code=404, detail=f"Swarm '{swarm_id}' not found.")
+        return {"ok": True, "swarm": info}
+    return {"ok": True, "swarms": swarm.list_active_swarms()}
+
+
+class ToolSynthesizeIn(BaseModel):
+    name: str
+    description: str
+    python_code: str
+    test_args: Optional[dict] = None
+
+
+@app.post("/api/tools/synthesize")
+def tool_synthesize_endpoint(body: ToolSynthesizeIn) -> dict:
+    from . import tool_synthesizer
+    res = tool_synthesizer.synthesize_tool(
+        name=body.name,
+        description=body.description,
+        python_code=body.python_code,
+        test_args=body.test_args,
+    )
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res.get("speech", "Tool synthesis failed"))
+    return res
 
 
 _SENT_SPLIT = re.compile(r".*?[.!?]+(?:\s+|$)")
@@ -191,11 +509,26 @@ async def ws_voice(ws: WebSocket) -> None:
     async def reader() -> None:
         try:
             while True:
-                inbox.put_nowait(await ws.receive_json())
+                msg = await ws.receive_json()
+                if isinstance(msg, dict) and msg.get("type") == "ping":
+                    if ws.client_state == WebSocketState.CONNECTED:
+                        await ws.send_json({"type": "pong", "ts": time.time()})
+                    continue
+                inbox.put_nowait(msg)
         except Exception:
             inbox.put_nowait(None)
 
+    async def ping_worker() -> None:
+        try:
+            while ws.client_state == WebSocketState.CONNECTED:
+                await asyncio.sleep(15)
+                if ws.client_state == WebSocketState.CONNECTED:
+                    await ws.send_json({"type": "ping", "ts": time.time()})
+        except Exception:
+            pass
+
     reader_task = asyncio.create_task(reader())
+    ping_task = asyncio.create_task(ping_worker())
 
     async def run_say(text: str, want_audio: bool) -> None:
         aq: asyncio.Queue = asyncio.Queue()   # sentences -> audio worker
@@ -219,16 +552,16 @@ async def ws_voice(ws: WebSocket) -> None:
             None, lambda: brain.handle_turn(
                 text, on_event=on_event,
                 cancelled=lambda: state["cancel"],
-                voice=True))
+                voice=want_audio))
 
         acc_tail = ""
         reply = ""
 
-        def handle_event(res: dict) -> None:
+        async def handle_event(res: dict) -> None:
             nonlocal acc_tail, reply
             if res.get("type") == "delta":
                 if ws.client_state == WebSocketState.CONNECTED:
-                    asyncio.ensure_future(ws.send_json(res))   # live bubble
+                    await ws.send_json(res)   # live bubble
                 acc_tail += str(res.get("text") or "")
                 sents, acc_tail = _split_sentences(acc_tail)
                 if want_audio and not state["cancel"]:
@@ -237,7 +570,7 @@ async def ws_voice(ws: WebSocket) -> None:
             elif res.get("type") == "done":
                 reply = res.get("text") or ""          # final frame covers it
             elif ws.client_state == WebSocketState.CONNECTED:
-                asyncio.ensure_future(ws.send_json(res))
+                await ws.send_json(res)
 
         async def handle_client_frame(msg) -> None:
             if msg is None:
@@ -251,7 +584,7 @@ async def ws_voice(ws: WebSocket) -> None:
 
         while True:
             for ev in take_events():
-                handle_event(ev)
+                await handle_event(ev)
             if ex.done():
                 break
             try:
@@ -260,17 +593,18 @@ async def ws_voice(ws: WebSocket) -> None:
             except asyncio.TimeoutError:
                 pass
         for ev in take_events():                      # final drain
-            handle_event(ev)
+            await handle_event(ev)
         try:
             reply = ex.result() or reply              # authoritative
         except Exception as exc:  # noqa: BLE001
             reply = reply or f"Error: {str(exc)[:150]}"
+
         tail = acc_tail.strip()
         if tail and want_audio and not state["cancel"]:
             aq.put_nowait(tail)
         aq.put_nowait(None)
 
-        try:                                       # flush ALL audio first
+        try:
             await asyncio.wait_for(worker, timeout=180)
         except Exception:
             worker.cancel()
@@ -313,10 +647,21 @@ async def ws_voice(ws: WebSocket) -> None:
     finally:
         state["cancel"] = True
         reader_task.cancel()
+        ping_task.cancel()
 
 
 @app.post("/api/chat/stream")
 async def chat_stream(body: ChatIn, request=None):
+    if is_circuit_open():
+        from .fastlane import fast_command
+        from .llm import _offline_parse
+        instant = fast_command(body.text) or _offline_parse(body.text)
+        if instant:
+            async def _instant_gen():
+                yield f"data: {json.dumps({'type': 'final', 'reply': instant})}\n\n"
+            return StreamingResponse(_instant_gen(), media_type="text/event-stream")
+        raise HTTPException(status_code=503, detail="LLM circuit breaker open")
+
     state = {"cancelled": False}
 
     async def source():
@@ -463,4 +808,65 @@ def audit_view():
 def clear_chat():
     db.clear_messages()
     return {"ok": True}
+
+
+@app.get("/api/autonomy/approvals")
+def get_pending_approvals():
+    from .approval_queue import get_approval_queue
+    return {"ok": True, "approvals": get_approval_queue().get_pending()}
+
+
+@app.post("/api/autonomy/approve")
+async def approve_action(req: Request):
+    from .approval_queue import get_approval_queue
+    body = await req.json()
+    item_id = body.get("id")
+    if not item_id:
+        return {"ok": False, "error": "Missing approval id"}
+    return get_approval_queue().approve(item_id)
+
+
+@app.post("/api/autonomy/reject")
+async def reject_action(req: Request):
+    from .approval_queue import get_approval_queue
+    body = await req.json()
+    item_id = body.get("id")
+    reason = body.get("reason", "")
+    if not item_id:
+        return {"ok": False, "error": "Missing approval id"}
+    return get_approval_queue().reject(item_id, reason)
+
+
+@app.get("/api/autonomy/stats")
+def get_autonomy_stats():
+    from .consent import get_consent_manager
+    from .credential_vault import get_credential_vault
+    from .revenue import get_revenue_tracker
+    from .jarvis_agent import get_jarvis_agent
+    from .security_agent import get_security_agent
+    from .wellness_agent import get_wellness_agent
+    cm = get_consent_manager()
+    rev = get_revenue_tracker()
+    cv = get_credential_vault()
+    ja = get_jarvis_agent()
+    sec = get_security_agent()
+    wel = get_wellness_agent()
+    return {
+        "ok": True,
+        "consent_level": cm.get_level(),
+        "trust_score": cm.trust_score(),
+        "revenue_stats": rev.get_stats(7),
+        "configured_services": cv.list_services(),
+        "security_score": sec.check_passwords().get("health_score", 1.0),
+        "screen_time": wel.track_screen_time(),
+        "proactive_alerts": ja.proactive_alerts,
+    }
+
+
+@app.post("/api/autonomy/kill")
+def emergency_kill_switch():
+    from .kill_switch import get_kill_switch
+    res = get_kill_switch().stop_all("API Emergency Stop")
+    return res
+
 

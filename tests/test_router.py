@@ -1,4 +1,4 @@
-﻿import pytest
+import pytest
 
 from mk2 import db, llm
 
@@ -106,7 +106,7 @@ class TestTokenCascade:
         att = llm._attempts("primary")
         models = [m for p, m in att]
         assert models[0] == llm.PRIMARY_LADDER[0]          # best model first
-        assert models.index("qwen3.6-27b") > models.index("gpt-oss-120b")
+        assert models.index(llm.PRIMARY_LADDER[-1]) > models.index(llm.PRIMARY_LADDER[0])
         assert ("gemini", "gm") in [(p["name"], m) for p, m in att]  # fallback tail
 
     def test_quota_error_cascades_and_cools_down(self, monkeypatch):
@@ -126,22 +126,23 @@ class TestTokenCascade:
 
     def test_soft_errors_cool_briefly_not_forever(self, monkeypatch):
         monkeypatch.setattr(llm, "_providers", _freellm_provs)
+        top_model = llm.PRIMARY_LADDER[0]
         with llm._cd_lock:
             llm._cooldowns.clear()
-        llm._penalize("freellmapi", "gpt-oss-120b", "ConnectionResetError")
+        llm._penalize("freellmapi", top_model, "ConnectionResetError")
         att = [m for p, m in llm._attempts("primary")]
-        assert "gpt-oss-120b" not in att          # cooling (60s)
+        assert top_model not in att          # cooling (60s)
         import time as _t
         with llm._cd_lock:
-            llm._cooldowns["freellmapi:gpt-oss-120b"] = _t.time() - 1
+            llm._cooldowns[f"freellmapi:{top_model}"] = _t.time() - 1
         att = [m for p, m in llm._attempts("primary")]
-        assert att[0] == "gpt-oss-120b"           # back on top after expiry
+        assert att[0] == top_model           # back on top after expiry
 
     def test_explicit_override_pins_model(self, monkeypatch):
         monkeypatch.setattr(llm, "_providers", _freellm_provs)
-        att = llm._attempts("primary", model_override="inkling")
+        att = llm._attempts("primary", model_override=llm.PRIMARY_LADDER[1])
         fm = [(p["name"], m) for p, m in att if p["name"] == "freellmapi"]
-        assert fm == [("freellmapi", "inkling")]
+        assert fm == [("freellmapi", llm.PRIMARY_LADDER[1])]
 
     def test_all_cooling_falls_through_then_retries(self, monkeypatch):
         monkeypatch.setattr(llm, "_providers", _freellm_provs)
