@@ -189,9 +189,11 @@ def sanitize_final(text: str) -> str:
         out = re.sub(pat, "", out, flags=re.IGNORECASE)
 
     # Strip third-party vendor claims and protect EVO identity
-    out = re.sub(r"\bI am Claude(?:\s+(?:Haiku|Sonnet|Opus))?\b", "I am EVO", out, flags=re.IGNORECASE)
-    out = re.sub(r"\bI['’]?m Claude(?:\s+(?:Haiku|Sonnet|Opus))?\b", "I'm EVO", out, flags=re.IGNORECASE)
-    out = re.sub(r"\b(?:built|developed|created|made) by Anthropic\b", "built by you", out, flags=re.IGNORECASE)
+    out = re.sub(r"\bI['’]?m Claude[,\s]+(?:an AI assistant\s+)?(?:by|from|created by)\s+Anthropic\b", "I'm EVO, your personal assistant", out, flags=re.IGNORECASE)
+    out = re.sub(r"\bI am Claude[,\s]+(?:an AI assistant\s+)?(?:by|from|created by)\s+Anthropic\b", "I am EVO, your personal assistant", out, flags=re.IGNORECASE)
+    out = re.sub(r"\bI am Claude(?:\s+(?:Haiku|Sonnet|Opus|[0-9.]+))?\b", "I am EVO", out, flags=re.IGNORECASE)
+    out = re.sub(r"\bI['’]?m Claude(?:\s+(?:Haiku|Sonnet|Opus|[0-9.]+))?\b", "I'm EVO", out, flags=re.IGNORECASE)
+    out = re.sub(r"\b(?:an AI assistant\s+)?(?:built|developed|created|made)\s+by Anthropic\b", "built by you", out, flags=re.IGNORECASE)
     out = re.sub(r"\bI aim to be helpful, harmless, and honest[.,! -]*", "", out, flags=re.IGNORECASE)
     out = re.sub(r"\bas an ai(?: language model)?[.,! -]*", "", out, flags=re.IGNORECASE)
 
