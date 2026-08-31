@@ -815,23 +815,26 @@ def chat_stream(messages: list[dict], temperature: float = 0.6, model: str = "",
     errors = []
     attempts = _attempts(role, model)
 
-    # Parallel race of the top-2 routes across all roles (voice, fast, primary).
+    # Parallel race only across DIFFERENT providers to avoid overloading a single proxy
     if os.environ.get("EVO_RACE", "1") == "1" and not model and len(attempts) >= 2:
-        pairs = attempts[:2]
-        info: dict = {}
-        buf: list[str] = []
-        race_timeout = 3.0 if role == "voice" else 4.5
-        for delta in _race_stream(pairs, messages, temperature, first_timeout=race_timeout, info=info):
-            buf.append(delta)
-            yield delta
-        if info.get("no_token"):
-            pass                       # nobody spoke -> ladder takes over
-        elif not info.get("stalled"):
-            return
-        else:
-            # winner stalled mid-generation: caller resets + retries
-            _penalize(pairs[0][0]["name"], pairs[0][1], "stalled", hard=True)
-            raise LLMStreamStalled(partial="".join(buf))
+        prov0 = attempts[0][0]["name"]
+        prov1 = attempts[1][0]["name"]
+        if prov0 != prov1:
+            pairs = attempts[:2]
+            info: dict = {}
+            buf: list[str] = []
+            race_timeout = 3.0 if role == "voice" else 4.5
+            for delta in _race_stream(pairs, messages, temperature, first_timeout=race_timeout, info=info):
+                buf.append(delta)
+                yield delta
+            if info.get("no_token"):
+                pass                       # nobody spoke -> ladder takes over
+            elif not info.get("stalled"):
+                return
+            else:
+                # winner stalled mid-generation: caller resets + retries
+                _penalize(pairs[0][0]["name"], pairs[0][1], "stalled", hard=True)
+                raise LLMStreamStalled(partial="".join(buf))
 
     for idx, (prov, m) in enumerate(attempts):
         try:
