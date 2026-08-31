@@ -1,194 +1,66 @@
-# ANTIGRAVITY — EVO MK2 Final Push to 9/10
+# ANTIGRAVITY — EVO MK2 Final Push to 9/10 + Unified Intelligence
 ## Working directory: C:\Users\MOHD SUHAIB\Downloads\EVO-MK2
 ## Start: git checkout -b jarvis-9-final
 
-You are the final hardening agent. Previous passes built the money modules
-and fixed most bugs. This pass fixes the remaining issues AND adds
-unified money intelligence.
+You are the final hardening agent. Previous passes built the money modules,
+wired barge-in, built deep research, and fixed most bugs.
+This pass fixes the remaining infrastructure AND adds unified intelligence
+that can learn, connect, and reason about ANY topic.
 
 Score target: 9/10.
 
 ---
 
-## PART 1: FIX CONVO.PY BLOCKING (CRITICAL — voice is broken right now)
+## PART 1: FIX CONVO.PY BLOCKING (CRITICAL)
 
 File: mk2/voice/convo.py, line 137
 
-Current: self.pipeline.process_utterance(text) runs inside the main audio loop.
-This blocks the entire loop for 2-5 seconds while the LLM generates.
-During this block: mic stops reading, barge-in stops processing, VAD stops running.
-The user cannot interrupt. Voice is broken.
+Problem: self.pipeline.process_utterance(text) runs inside the main audio
+loop. While the LLM generates (2-5s), the entire loop blocks — mic stops,
+barge-in stops, VAD stops. User cannot interrupt. Voice is broken.
 
-Fix: Run process_utterance in a separate thread.
+Fix: Run process_utterance in a separate daemon thread. Main loop never
+blocks on LLM or TTS.
 
-def _run(self):
- stream = stt_mod.Stream()
- audio_q = queue.Queue(maxsize=100)
+Implementation:
+ - Keep the _reader thread for mic frames (already exists)
+ - Add a _process thread for LLM + TTS
+ - Use a queue to signal completion back to main loop
+ - Barge-in processes every frame regardless of LLM state
+ - If pipeline fails, fall back to speaker.say()
 
- def _reader():
- import sounddevice as sd
- try:
- sd.RawInputStream(samplerate=16000, channels=1, dtype='int16',
- blocksize=960, callback=lambda f, t, s, u: audio_q.put_nowait(bytes(f)))
- while not self._stop.is_set():
- time.sleep(0.1)
- except Exception:
- pass
-
- threading.Thread(target=_reader, daemon=True).start()
-
- # Pipeline runs in its own thread, main loop only handles mic + barge-in
- reply_queue = queue.Queue()
-
- def _process(text):
- try:
- result = self.pipeline.process_utterance(text, surface="voice")
- reply_queue.put(result)
- except Exception as exc:
- log.warning("Voice pipeline error: %s", exc)
- reply_queue.put(None)
-
- processing = False
-
- while not self._stop.is_set():
- try:
- frame = audio_q.get(timeout=0.5)
- except Exception:
- continue
-
- lvl = _rms(frame)
- noise_floor = 0.9 * noise_floor + 0.1 * lvl
- speaking = getattr(self.speaker, "is_speaking", False) or self.pipeline.is_active
- self.barge_in_mgr.process_frame(frame, is_playing=speaking)
- self.pipeline.feed_mic_frame(frame)
-
- kind, text = s.feed(frame)
- if not text:
- continue
-
- now = time.time()
- quiet = lvl < max(320.0, noise_floor * 2.2)
- if _should_finalize(kind, text, quiet, last_key, last_change, now):
- last_key = ""
- low = text.lower()
- if any(x in low for x in EXIT_PHRASES):
- self.speaker.say("Closing conversation mode.")
- break
- if not processing:
- processing = True
- threading.Thread(target=_process, args=(text,), daemon=True).start()
- last_key = ""
- # Check if pipeline finished
- try:
- result = reply_queue.get_nowait()
- if result:
- pass # pipeline handles its own TTS
- processing = False
- except Exception:
- pass
-
-Key requirements:
-- Main loop NEVER blocks on LLM or TTS
-- Barge-in processes every frame, even during LLM generation
-- Pipeline runs in daemon thread
-- Use a queue to signal completion back to main loop
-- If pipeline fails, fall back gracefully
-- Do NOT break existing behavior
+Key constraints:
+ - Main loop NEVER blocks on LLM or TTS
+ - Barge-in fires even while LLM is generating
+ - Daemon threads (die with main thread, no orphan processes)
+ - No bare except: pass
 
 ---
 
 ## PART 2: ADD 5 MONEY API ENDPOINTS
 
 File: mk2/server.py
-Add after existing autonomy endpoints (after /api/autonomy/health):
+Add after existing autonomy endpoints:
 
-@app.get("/api/money/briefing")
-def get_money_briefing_api():
- try:
- from .money_briefing import get_money_briefing_engine
- briefing = get_money_briefing_engine().generate_briefing()
- return {"ok": True, "briefing": briefing}
- except Exception as exc:
- return {"ok": False, "error": str(exc)}
+GET /api/money/briefing — today's money briefing
+GET /api/money/pipeline — funnel + leads + pending
+GET /api/money/clients — CRM client list with scores
+GET /api/money/opportunities — scored gigs
+POST /api/money/followup/{client_id} — generate follow-up draft
 
-@app.get("/api/money/pipeline")
-def get_money_pipeline_api():
- try:
- from .money_engine import get_money_engine
- engine = get_money_engine()
- return {
- "ok": True,
- "funnel": engine.revenue.get_funnel_metrics(days=30),
- "running": engine.running,
- "last_tick": engine.last_tick_ts,
- }
- except Exception as exc:
- return {"ok": False, "error": str(exc)}
-
-@app.get("/api/money/clients")
-def get_money_clients_api():
- try:
- from .crm import get_crm
- crm = get_crm()
- clients = []
- for c in crm.list_clients():
- clients.append({
- "id": c.id, "name": c.name, "email": c.email,
- "platform": c.platform, "stage": c.stage,
- "lead_score": c.lead_score, "total_revenue": c.total_revenue,
- "updated_at": c.updated_at,
- })
- return {"ok": True, "clients": clients}
- except Exception as exc:
- return {"ok": False, "error": str(exc)}
-
-@app.get("/api/money/opportunities")
-def get_money_opportunities_api():
- try:
- from .money_engine import get_money_engine
- engine = get_money_engine()
- opportunities = engine.scan_opportunities()
- scored = engine.scorer.rank_opportunities(opportunities) if opportunities else []
- return {
- "ok": True,
- "opportunities": [
- {
- "id": o.id, "title": o.title, "platform": o.platform,
- "budget": o.budget, "win_probability": o.win_probability,
- "expected_value": o.expected_value, "recommendation": o.recommendation,
- }
- for o in scored[:20]
- ],
- }
- except Exception as exc:
- return {"ok": False, "error": str(exc)}
-
-@app.post("/api/money/followup/{client_id}")
-def post_money_followup(client_id: str):
- try:
- from .followup_engine import get_followup_engine
- engine = get_followup_engine()
- actions = engine.get_pending_followups()
- target = next((a for a in actions if a.client_id == client_id), None)
- if not target:
- return {"ok": False, "error": "No follow-up needed for this client"}
- # Generate the draft (don't send — user must approve)
- return {"ok": True, "draft": target.draft_message, "cadence": target.cadence}
- except Exception as exc:
- return {"ok": False, "error": str(exc)}
-
-All endpoints: permission="execute", add to existing auth check.
+Each endpoint: try/except, return {"ok": False, "error": ...} on failure.
+Add permission="execute" check.
 
 ---
 
-## PART 3: UNIFIED MONEY INTELLIGENCE
+## PART 3: UNIFIED INTELLIGENCE — THE BRAIN THAT UNDERSTANDS MONEY
 
-The brain should UNDERSTAND money, not just call tools. This means the LLM
-has money context baked into its reasoning, not fetched per-tool-call.
+### 3a. Build MoneyIntelligence context injector
 
-### 3a. Build Money Intelligence Context (mk2/money_intelligence.py)
+File: mk2/money_intelligence.py (NEW)
 
-Create a module that builds a rich money context string for the LLM:
+Build a class that creates a rich money context string for the LLM.
+This is NOT tool calls — it's raw data the LLM reasons about directly.
 
 class MoneyIntelligence:
  def __init__(self):
@@ -198,118 +70,373 @@ class MoneyIntelligence:
  self.briefing = get_money_briefing_engine()
 
  def get_context(self) -> str:
- Build a COMPLETE money snapshot that the LLM can reason about:
- - 30-day revenue, month-over-month change
- - Pipeline value (sum of all active lead budgets * win probability)
- - Active clients by stage with scores
+ Return a COMPLETE money snapshot:
+ - 30-day revenue + month-over-month change
+ - Pipeline value (active lead budgets * win probability)
+ - Active clients by stage with lead scores
  - Best performing gig types (from CRM tags + revenue)
  - Response rate, win rate, average pay
  - Top 3 actions for today
  - Upcoming deliverables and payment due dates
- - Opportunity: highest EV gig currently available
+ - Single highest-EV opportunity right now
 
+ Format as clean text the LLM can read and reason about.
  This becomes the LLM's "knowledge" of the business.
- It can answer ANY money question without calling tools.
-
- def answer(self, question: str) -> str:
- Use the LLM to answer money questions using the context.
- The LLM has all the data — it reasons about it directly.
- No tool calls needed for analysis questions.
 
 ### 3b. Wire into brain.py
 
-In mk2/brain.py, in the money keyword detection (around line 525):
-Instead of injecting raw numbers, inject the full MoneyIntelligence context.
+File: mk2/brain.py, around line 525 (money keyword detection)
 
-Current (bad):
- crm_ctx = f"- 30-Day Revenue: ${funnel_stats.get('total_revenue', 0.0):,.2f}..."
-
-New (good):
+Replace the basic number injection with MoneyIntelligence context:
  from .money_intelligence import get_money_intelligence
  mi = get_money_intelligence()
  money_ctx = mi.get_context()
  system_extra = f"\n=== YOUR BUSINESS ===\n{money_ctx}\n=== END ===\n"
- system_extra += "\nWhen the user asks about money, use this context to reason " \
- "directly. You understand their business — answer conversationally, " \
- "with specific numbers and actionable recommendations. Don't call tools " \
- "for analysis questions — you already have the data."
+ system_extra += (
+ "\nYou understand this business deeply. Give specific recommendations with "
+ "numbers. Don't call tools for analysis — you already have everything you need. "
+ "Only call tools for actions: sending proposals, creating invoices, recording payments."
+ )
 
-This makes the LLM genuinely intelligent about money. It can:
- - Say "Your response rate dropped this week — your winning proposals average
- 89 words, try shortening them"
- - Say "You have $2,400 in pipeline value with a 35% expected close rate"
- - Say "Follow up with ABC Corp — it's been 5 days and they're your hottest lead"
- - WITHOUT calling any tools. It reasons from context.
-
-### 3c. Keep tools for ACTIONS only
-
-The LLM should still call tools when it needs to:
- - Send a proposal (tool: submit_proposal)
- - Create an invoice (tool: create_invoice)
- - Record a payment (tool: record_payment)
- - Scan Upwork (tool: scan_gigs)
-
-But for ANALYSIS and RECOMMENDATIONS, the LLM uses its unified context.
-This is how a real assistant works — it knows your business and advises you,
-it doesn't read you numbers from a spreadsheet every time you ask.
+Result: LLM says "Your response rate dropped this week — your winning proposals
+average 89 words, try shortening them" instead of calling get_response_rate()
+and reading the number back.
 
 ---
 
-## PART 4: WRITE TESTS FOR 6 MONEY MODULES
+## PART 4: CROSS-DOMAIN KNOWLEDGE — LEARN ANYTHING AND CONNECT IT
 
-Create tests/test_crm.py:
+### 4a. Build KnowledgeSynthesizer
+
+File: mk2/knowledge.py (NEW — extends the existing RAG/knowledge system)
+
+class KnowledgeSynthesizer:
+ """Connects new knowledge to existing knowledge automatically."""
+
+ def __init__(self):
+ self.rag = get_rag() if available else None
+
+ def on_new_research(self, topic: str, content: str) -> dict:
+ """Called after deep_research completes. Finds connections."""
+ connections = []
+
+ # 1. Search existing vault for related topics
+ if self.rag:
+ existing = self.rag.search(topic, top_k=5)
+ for ex in existing:
+ connections.append({
+ "existing_topic": ex.get("title", ""),
+ "relevance": ex.get("score", 0),
+ "connection_type": "direct_match",
+ })
+
+ # 2. Ask LLM: what does this connect to?
+ try:
+ from .llm import chat
+ prompt = f"""I just researched: "{topic}"
+
+Here is a summary of what I learned:
+{content[:2000]}
+
+Based on this, what OTHER topics does this connect to?
+List 3-5 connection topics that might be in my existing knowledge base.
+Format as a simple list, one per line."""
+
+ result = chat([
+ {"role": "system", "content": "You are a knowledge management assistant. List related topics concisely."},
+ {"role": "user", "content": prompt},
+ ], role="fast", timeout=10)
+
+ for line in (result or "").split("\n"):
+ line = line.strip("- •").strip()
+ if line:
+ connections.append({
+ "existing_topic": line,
+ "relevance": 0.5,
+ "connection_type": "llm_inferred",
+ })
+ except Exception:
+ pass
+
+ # 3. Save connections to knowledge graph
+ return {
+ "topic": topic,
+ "connections": connections,
+ "new_entries": len(connections),
+ }
+
+ def get_related(self, topic: str) -> list[dict]:
+ """Get all knowledge connected to a topic."""
+ related = []
+ if self.rag:
+ related.extend(self.rag.search(topic, top_k=10))
+ return related
+
+### 4b. Wire into deep_research
+
+File: mk2/research_tools.py, in the deep_research function
+
+After engine.research(topic) completes:
+ from .knowledge import get_knowledge_synthesizer
+ synth = get_knowledge_synthesizer()
+ connections = synth.on_new_research(topic, report_obj.markdown_report)
+
+ if connections.get("connections"):
+ _emit(f"Connected to {connections['new_entries']} existing knowledge areas")
+ # Store connections in the report for later retrieval
+ report_obj.markdown_report += f"\n\n## Knowledge Connections\n"
+ for c in connections["connections"]:
+ report_obj.markdown_report += f"- {c['existing_topic']} ({c['connection_type']})\n"
+
+### 4c. Wire into brain.py — proactive recall
+
+File: mk2/brain.py
+
+Before processing any user message, check if relevant knowledge exists:
+
+ def _inject_relevant_knowledge(self, text: str, messages: list[dict]) -> None:
+ """Before responding, check vault/rag for relevant prior knowledge."""
+ try:
+ from .knowledge import get_knowledge_synthesizer
+ synth = get_knowledge_synthesizer()
+ related = synth.get_related(text)
+ if related:
+ knowledge_block = "\n".join(
+ f"[{i+1}] {r.get('title', '')}: {r.get('text', '')[:300]}"
+ for i, r in enumerate(related[:3])
+ )
+ extra = f"\n=== RELEVANT KNOWLEDGE ===\n{knowledge_block}\n=== END ===\n"
+ extra += "\nUse this knowledge if relevant. Reference it naturally."
+ messages[0]["content"] += extra
+ except Exception:
+ pass
+
+Call this before every LLM call in handle_turn(). The LLM now has access
+to everything it has ever learned, automatically surfaced for relevance.
+
+---
+
+## PART 5: SKILL DISTILLATION — TURN KNOWLEDGE INTO ACTIONABLE SKILLS
+
+### 5a. Build SkillExtractor
+
+File: mk2/skills.py (NEW)
+
+class SkillExtractor:
+ """Extracts actionable procedures from research and conversation."""
+
+ def __init__(self):
+ self.skills_dir = DATA / "extracted_skills"
+ self.skills_dir.mkdir(parents=True, exist_ok=True)
+
+ def extract_from_research(self, topic: str, content: str) -> list[dict]:
+ """After deep research, extract actionable skills."""
+ try:
+ from .llm import chat
+ prompt = f"""From this research on "{topic}":
+
+{content[:3000]}
+
+Extract 3-5 ACTIONABLE PROCEDURES — things the user can actually DO.
+Each procedure should be:
+1. A clear action ("When X happens, do Y")
+2. Specific enough to follow without additional research
+3. Tested/verified (only include what the sources agree on)
+
+Format as a numbered list. If no actionable procedures exist, say "None identified"."""
+
+ result = chat([
+ {"role": "system", "content": "You are a skill extraction specialist. Extract only actionable, verified procedures."},
+ {"role": "user", "content": prompt},
+ ], role="fast", timeout=15)
+
+ skills = []
+ for line in (result or "").split("\n"):
+ line = line.strip()
+ if line and not line.lower().startswith("none"):
+ skills.append({
+ "topic": topic,
+ "procedure": line,
+ "source": "deep_research",
+ "confidence": "high",
+ "uses": 0,
+ "created_at": time.time(),
+ })
+
+ # Save to disk
+ if skills:
+ path = self.skills_dir / f"{_slug(topic)}.json"
+ path.write_text(json.dumps(skills, indent=2), encoding="utf-8")
+
+ return skills
+ except Exception as exc:
+ log.warning("Skill extraction failed: %s", exc)
+ return []
+
+ def get_relevant_skills(self, context: str) -> list[dict]:
+ """Find skills relevant to current task."""
+ relevant = []
+ try:
+ for f in self.skills_dir.glob("*.json"):
+ skills = json.loads(f.read_text(encoding="utf-8"))
+ for skill in skills:
+ # Simple keyword match — upgrade to embedding similarity later
+ topic_words = skill.get("topic", "").lower().split()
+ ctx_words = context.lower().split()
+ overlap = len(set(topic_words) & set(ctx_words))
+ if overlap > 0:
+ relevant.append(skill)
+ except Exception:
+ pass
+ return relevant
+
+### 5b. Wire into deep_research
+
+File: mk2/research_tools.py
+
+After knowledge synthesis:
+ from .skills import get_skill_extractor
+ extractor = get_skill_extractor()
+ new_skills = extractor.extract_from_research(topic, report_obj.markdown_report)
+ if new_skills:
+ _emit(f"Extracted {len(new_skills)} actionable skills")
+ for skill in new_skills:
+ report_obj.markdown_report += f"\n- **Skill**: {skill['procedure']}\n"
+
+### 5c. Wire into brain.py — inject relevant skills
+
+File: mk2/brain.py
+
+In _inject_relevant_knowledge(), also inject relevant skills:
+
+ def _inject_relevant_knowledge(self, text, messages):
+ # ... existing knowledge injection ...
+
+ # Also inject relevant skills
+ try:
+ from .skills import get_skill_extractor
+ extractor = get_skill_extractor()
+ skills = extractor.get_relevant_skills(text)
+ if skills:
+ skill_block = "\n".join(
+ f"- {s['procedure']}" for s in skills[:3]
+ )
+ messages[0]["content"] += (
+ f"\n=== RELEVANT PROCEDURES ===\n{skill_block}\n"
+ "Apply these procedures when relevant. Don't mention them unless the user asks."
+ )
+ except Exception:
+ pass
+
+Now when the user says "help me grow my YouTube channel" and the agent
+previously researched YouTube, it automatically applies the extracted skills
+("Use hooks in first 3 seconds", "Post at 2pm on weekdays") without being told.
+
+---
+
+## PART 6: PROACTIVE KNOWLEDGE APPLICATION
+
+### 6a. Add pre-task knowledge query to brain
+
+File: mk2/brain.py
+
+Before ANY task (not just money), the brain should check what it knows:
+
+In handle_turn(), before calling the LLM:
+ 1. Take the user's message
+ 2. Query knowledge base: "What do I know about this topic?"
+ 3. Query skills: "What procedures apply here?"
+ 4. Inject both into the LLM context
+
+This is the same pattern as the money injection, but universal.
+
+Implementation:
+ - Move the knowledge+skill injection to a single method
+ - Call it for ALL messages, not just money keywords
+ - Keep it lightweight — max 3 knowledge entries, max 2 skills
+ - Use role="fast" model for the relevance check (low latency)
+
+### 6b. Autonomous learning triggers
+
+The agent should proactively learn when it encounters unknowns:
+
+In brain.py, after LLM responds:
+ if response contains "I don't know" or "I'm not familiar" or similar:
+ Trigger deep_research on the topic
+ Save results to vault + knowledge graph + skills
+ Reply: "I didn't know that well — I just researched it. Here's what I found..."
+
+Implementation:
+ - Detect uncertainty patterns in LLM response
+ - Spawn background research (don't block the reply)
+ - Queue: "learn about X"
+ - On next turn, incorporate the new knowledge
+
+---
+
+## PART 7: WRITE TESTS FOR 6 MONEY MODULES
+
+Create tests/test_crm.py (10 tests):
  - test_add_client, test_update_stage, test_record_interaction
  - test_lead_scoring_budget, test_lead_scoring_stage
  - test_get_active_leads, test_get_pipeline_summary
- - test_search_clients
+ - test_search_clients, test_duplicate_client_update
 
-Create tests/test_invoicing.py:
+Create tests/test_invoicing.py (10 tests):
  - test_create_invoice, test_mark_paid, test_list_pending
  - test_invoice_total_calculation, test_crm_sync
+ - test_invoice_status_lifecycle, test_overdue_detection
+ - test_multiple_invoices_same_client
 
-Create tests/test_payments.py:
+Create tests/test_payments.py (10 tests):
  - test_process_payment, test_duplicate_rejection
  - test_scan_email_receipts (mock email agent)
  - test_bus_event_emission
- - test_crm_update_on_payment
+ - test_crm_update_on_payment, test_manual_payment_entry
 
-Create tests/test_opportunity_scorer.py:
- - test_calculate_win_probability
- - test_score_opportunity_ev
+Create tests/test_opportunity_scorer.py (10 tests):
+ - test_calculate_win_probability, test_score_opportunity_ev
  - test_record_outcome_weight_adaptation
- - test_rank_opportunities
+ - test_rank_opportunities, test_budget_sweet_spot
+ - test_skill_match_factor, test_competition_factor
 
-Create tests/test_followup_engine.py:
- - test_detect_dormant_lead
- - test_respect_max_followups
- - test_cadence_timing_24h_72h_7d
- - test_generate_draft
+Create tests/test_followup_engine.py (10 tests):
+ - test_detect_dormant_lead_24h, test_detect_dormant_lead_72h
+ - test_respect_max_followups_per_client
+ - test_cadence_timing, test_generate_draft
+ - test_cold_lead_after_max_followups
 
-Create tests/test_money_briefing.py:
+Create tests/test_money_briefing.py (10 tests):
  - test_generate_briefing_structure
- - test_top_actions_populated
- - test_revenue_calculation
- - test_briefing_caching
+ - test_top_actions_populated, test_empty_pipeline
+ - test_revenue_calculation, test_briefing_caching
 
 Total: ~60 tests. Run python -m pytest tests/ -q after writing.
+All 386 tests must pass (326 original + 60 new).
 
 ---
 
-## PART 5: VERIFICATION CHECKLIST
+## PART 8: VERIFICATION CHECKLIST
 
 INFRASTRUCTURE:
- [ ] convo.py does NOT block the main loop during LLM generation
- [ ] BargeInManager processes frames even while LLM is thinking
- [ ] All 5 money API endpoints exist and return valid JSON
- [ ] TTFT is exposed in health endpoint
- [ ] Voice context trimmed to 5 messages
- [ ] All 386 tests pass (326 original + 60 new)
+ [ ] convo.py does NOT block main loop during LLM generation
+ [ ] BargeInManager processes frames during LLM generation
+ [ ] All 5 money API endpoints return valid JSON
+ [ ] TTFT exposed in health endpoint
 
-MONEY INTELLIGENCE:
- [ ] money_intelligence.py exists with get_context() and answer()
- [ ] Brain injects MoneyIntelligence context on money queries
- [ ] LLM can reason about money without calling tools
- [ ] Tools still used for actions (proposals, invoices, payments)
+UNIFIED INTELLIGENCE:
+ [ ] money_intelligence.py exists with get_context()
+ [ ] Brain injects MoneyIntelligence context (not just raw numbers)
+ [ ] knowledge.py exists with KnowledgeSynthesizer
+ [ ] Deep research auto-connects new knowledge to existing
+ [ ] skills.py exists with SkillExtractor
+ [ ] Deep research extracts actionable skills
+ [ ] Brain injects relevant knowledge + skills before ALL responses
+ [ ] Proactive learning triggers on uncertainty
+
+MONEY:
+ [ ] All 6 money modules have tests (60 tests total)
+ [ ] All 386 tests pass
  [ ] Money briefing surfaces to user proactively
 
 If ANY checkbox is unchecked, do not report done.
@@ -323,11 +450,14 @@ If ANY checkbox is unchecked, do not report done.
 3. Do NOT break any test
 4. Do NOT add external dependencies
 5. No bare except: pass in critical paths
-6. Report: PART 1 changes, PART 2 new files, PART 3 wiring, test results, UNCHECKED items, final score
+6. All money amounts stored as float, formatted $X.XX in speech
+7. Every new module must have _log_event() for structured logging
+8. If you can't wire something, add TODO and move on
+9. Report: changes per part, new files created, test results, unchecked items, final score
 
 ## START
 
 cd C:\Users\MOHD SUHAIB\Downloads\EVO-MK2
 git checkout -b jarvis-9-final
 
-Work order: Part 1 (convo fix) -> Part 2 (API endpoints) -> Part 3 (unified intelligence) -> Part 4 (tests) -> Part 5 (verify).
+Work order: Part 1 (convo) → Part 2 (API) → Part 3 (money intelligence) → Part 4 (cross-domain) → Part 5 (skills) → Part 6 (proactive) → Part 7 (tests) → Part 8 (verify).

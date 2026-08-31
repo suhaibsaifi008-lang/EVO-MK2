@@ -539,6 +539,27 @@ def handle_turn(
         except Exception:
             pass
 
+    # Universal Relevant Knowledge & Distilled Actionable Skills Injection
+    try:
+        from .knowledge import get_knowledge_synthesizer
+        from .skills import get_skill_extractor
+        related_k = get_knowledge_synthesizer().get_related(text)
+        related_s = get_skill_extractor().get_relevant_skills(text)
+
+        k_blocks = []
+        if related_k:
+            k_lines = "\n".join(f"[{i+1}] {r.get('title', '')}: {r.get('snippet', '')[:200]}" for i, r in enumerate(related_k[:3]))
+            k_blocks.append(f"=== RELEVANT PRIOR KNOWLEDGE ===\n{k_lines}")
+
+        if related_s:
+            s_lines = "\n".join(f"- {s.get('procedure', '')}" for s in related_s[:3])
+            k_blocks.append(f"=== RELEVANT ACTIONABLE PROCEDURES ===\n{s_lines}\nApply these procedures directly when relevant.")
+
+        if k_blocks:
+            system_extra += "\n\n" + "\n\n".join(k_blocks) + "\n"
+    except Exception:
+        pass
+
     messages[0]["content"] += system_extra
 
     answer = ""
@@ -798,6 +819,14 @@ def handle_turn(
             conversation.record_turn_completion(text, answer)
         except Exception:
             pass
+        # Autonomous learning trigger on uncertainty
+        uncertainty_patterns = ("i don't know", "i'm not sure", "i am not sure", "i have no information", "not familiar with")
+        if any(p in answer.lower() for p in uncertainty_patterns) and len(text) > 10:
+            try:
+                from .research_tools import deep_research
+                deep_research(text)
+            except Exception:
+                pass
         try:
             context_snapshot = {
                 "turn_id": turn_id,

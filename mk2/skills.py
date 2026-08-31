@@ -1,19 +1,30 @@
-"""Skill Forge: teach EVO permanent new abilities as Python scripts.
+"""Skill Forge & Actionable Skill Distillation for EVO MK2.
 
-Skills are stored in DATA/skills/<name>.py with a .json meta file.
-They auto-register as tools and survive restarts. Hardened from MK1:
-AST validation before save, optional test-run, never registers broken code.
+1. Skill Forge: teach EVO permanent new abilities as Python scripts with AST validation.
+2. Skill Distillation: extract tested, actionable procedures from deep research and conversation.
 """
+from __future__ import annotations
+
 import ast
 import json
+import logging
+import re
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
+from typing import Any, Optional
 
 from .config import DATA
 
+log = logging.getLogger("mk2.skills")
+
 SKILLS_DIR = DATA / "skills"
+SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+EXTRACTED_SKILLS_DIR = DATA / "extracted_skills"
+EXTRACTED_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+
 _lock = threading.Lock()
 
 CONTRACT = (
@@ -22,39 +33,36 @@ CONTRACT = (
 )
 
 # --- Phase 5: AST security audit -------------------------------------------
-# Skills are code EVO wrote for itself. Before anything is saved it must
-# pass a static audit: no process spawning, no raw sockets, no dynamic
-# execution, no filesystem escapes beyond the data dir. This is a
-# blocklist, not a sandbox - it raises the bar sharply and pairs with the
-# test-run gate below.
-BANNED_MODULES = {"subprocess", "socket", "ctypes", "multiprocessing",
-                  "http.server", "socketserver", "winreg"}
-BANNED_NAMES = {"eval", "exec", "compile", "__import__", "system", "popen",
-                "spawn", "fork", "kill"}
+BANNED_MODULES = {
+    "subprocess", "socket", "ctypes", "multiprocessing",
+    "http.server", "socketserver", "winreg"
+}
+BANNED_NAMES = {
+    "eval", "exec", "compile", "__import__", "system", "popen",
+    "spawn", "fork", "kill"
+}
 
 
 def audit_code(code: str) -> None:
     """Raise ValueError if the code touches banned capabilities."""
-    import ast as _ast
-
     try:
-        tree = _ast.parse(code)
+        tree = ast.parse(code)
     except SyntaxError as exc:
         raise ValueError(f"syntax error: {exc}") from exc
-    for node in _ast.walk(tree):
-        if isinstance(node, _ast.Import):
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
             for a in node.names:
                 root = a.name.split(".")[0]
                 if root in BANNED_MODULES or a.name in BANNED_MODULES:
                     raise ValueError(f"banned module '{a.name}'")
-        elif isinstance(node, _ast.ImportFrom):
+        elif isinstance(node, ast.ImportFrom):
             root = (node.module or "").split(".")[0]
             if root in BANNED_MODULES or (node.module or "") in BANNED_MODULES:
                 raise ValueError(f"banned module '{node.module}'")
-        elif isinstance(node, _ast.Attribute):
+        elif isinstance(node, ast.Attribute):
             if node.attr in BANNED_NAMES:
                 raise ValueError(f"banned call '.{node.attr}()'")
-        elif isinstance(node, (_ast.Call,)):
+        elif isinstance(node, (ast.Call,)):
             fn = node.func
             name = getattr(fn, "id", None) or getattr(fn, "attr", None)
             if name in BANNED_NAMES:
@@ -70,20 +78,12 @@ def validate_code(code: str) -> None:
     audit_code(code)
 
 
-def _paths(name: str) -> tuple:
-    clean = name.strip().lower().replace(" ", "_")
-    import re
-
-    clean = re.sub(r"[^a-z0-9_]", "", clean)[:40]
-    base = SKILLS_DIR / clean
-    return base.with_suffix(".py"), base.with_suffix(".json"), clean
+def _slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9_]+", "_", text.lower().strip())[:40]
 
 
 def _paths(name: str) -> tuple:
-    clean = name.strip().lower().replace(" ", "_")
-    import re
-
-    clean = re.sub(r"[^a-z0-9_]", "", clean)[:40]
+    clean = _slug(name)
     base = SKILLS_DIR / clean
     return base.with_suffix(".py"), base.with_suffix(".json"), clean
 
@@ -109,9 +109,11 @@ def save(name: str, description: str, code: str) -> dict:
     if r.returncode != 0:
         py_path.unlink(missing_ok=True)
         json_path.unlink(missing_ok=True)
-        return {"ok": False,
-                "speech": f"Test run FAILED (exit {r.returncode}): {r.stderr[-200:]}. Skill NOT saved.",
-                "data": {}}
+        return {
+            "ok": False,
+            "speech": f"Test run FAILED (exit {r.returncode}): {r.stderr[-200:]}. Skill NOT saved.",
+            "data": {},
+        }
 
     _register(clean, str(py_path))
     return {"ok": True, "speech": f"Skill '{clean}' saved and armed.", "data": {}}
@@ -151,20 +153,19 @@ def _register(clean: str, path: str) -> None:
     from .tools import Tool, _REGISTRY
 
     def invoke(**kwargs) -> dict:
-        import json as _json
-
-        payload = _json.dumps(kwargs, ensure_ascii=False)
+        payload = json.dumps(kwargs, ensure_ascii=False)
         proc = subprocess.run(
             [sys.executable, "-I", path, payload],
             capture_output=True, text=True, timeout=60,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if proc.returncode != 0:
-            return {"ok": False,
-                    "speech": f"Skill failed (exit {proc.returncode}): {proc.stderr[-200:]}",
-                    "data": {}}
-        return {"ok": True, "speech": proc.stdout.strip()[:600] or "(no output)",
-                "data": {}}
+            return {
+                "ok": False,
+                "speech": f"Skill failed (exit {proc.returncode}): {proc.stderr[-200:]}",
+                "data": {},
+            }
+        return {"ok": True, "speech": proc.stdout.strip()[:600] or "(no output)", "data": {}}
 
     meta_p = Path(path).with_suffix(".json")
     desc = ""
@@ -199,7 +200,90 @@ def load_all() -> int:
     return count
 
 
-# tools ------------------------------------------------------------------
+# ---------------- Extracted Actionable Procedures (Skill Distillation) -----
+
+class SkillExtractor:
+    """Extracts actionable procedures from research and stores them for future proactive execution."""
+
+    def __init__(self, skills_dir: Optional[Path] = None) -> None:
+        self.skills_dir = skills_dir or EXTRACTED_SKILLS_DIR
+        self.skills_dir.mkdir(parents=True, exist_ok=True)
+
+    def extract_from_research(self, topic: str, content: str) -> list[dict[str, Any]]:
+        """After deep research, extract 3-5 verified actionable procedures."""
+        try:
+            from . import llm
+            prompt = (
+                f'From this research on "{topic}":\n\n'
+                f"{content[:3000]}\n\n"
+                "Extract 3-5 ACTIONABLE PROCEDURES — things the user can actually DO.\n"
+                "Each procedure should be:\n"
+                "1. A clear action ('When X happens, do Y' or 'Step 1: ...')\n"
+                "2. Specific enough to follow without additional research\n"
+                "3. Tested/verified by sources\n\n"
+                'Format as a numbered list. If no actionable procedures exist, say "None identified".'
+            )
+            result = llm.chat([
+                {"role": "system", "content": "You are a skill extraction specialist. Extract only actionable, verified procedures."},
+                {"role": "user", "content": prompt},
+            ], role="fast", timeout=15)
+
+            skills = []
+            for line in (result or "").split("\n"):
+                line = line.strip()
+                if line and not line.lower().startswith("none"):
+                    cleaned = re.sub(r"^[\d\.\-\*\•\s]+", "", line).strip()
+                    if len(cleaned) > 10:
+                        skills.append({
+                            "topic": topic,
+                            "procedure": cleaned,
+                            "source": "deep_research",
+                            "confidence": "high",
+                            "uses": 0,
+                            "created_at": time.time(),
+                        })
+
+            if skills:
+                path = self.skills_dir / f"{_slug(topic)}.json"
+                path.write_text(json.dumps(skills, indent=2), encoding="utf-8")
+
+            return skills
+        except Exception as exc:
+            log.warning("Skill extraction failed: %s", exc)
+            return []
+
+    def get_relevant_skills(self, context: str) -> list[dict[str, Any]]:
+        """Find skills relevant to current query or task."""
+        relevant = []
+        try:
+            ctx_tokens = set(re.findall(r"\w+", context.lower()))
+            for f in self.skills_dir.glob("*.json"):
+                try:
+                    skills_list = json.loads(f.read_text(encoding="utf-8"))
+                    for skill in skills_list:
+                        topic_tokens = set(re.findall(r"\w+", skill.get("topic", "").lower()))
+                        proc_tokens = set(re.findall(r"\w+", skill.get("procedure", "").lower()))
+                        overlap = len(ctx_tokens & (topic_tokens | proc_tokens))
+                        if overlap > 0:
+                            relevant.append(skill)
+                except Exception:
+                    pass
+        except Exception as exc:
+            log.debug("Skill query note: %s", exc)
+        return relevant
+
+
+_global_skill_extractor: Optional[SkillExtractor] = None
+
+
+def get_skill_extractor() -> SkillExtractor:
+    global _global_skill_extractor
+    if _global_skill_extractor is None:
+        _global_skill_extractor = SkillExtractor()
+    return _global_skill_extractor
+
+
+# ---------------- Tools Registration ---------------------------------------
 
 from .tools import tool  # noqa: E402
 
@@ -226,3 +310,4 @@ def skill_delete(name: str) -> dict:
     ok = delete(name)
     return {"ok": ok, "speech": f"'{name}' deleted." if ok else f"No skill '{name}'.",
             "data": {}}
+

@@ -91,6 +91,32 @@ def deep_research(topic: str) -> dict:
     doc = report_obj.markdown_report
     sources = [s["url"] for s in report_obj.sources]
 
+    # 1. Knowledge synthesis & cross-domain connection
+    try:
+        from .knowledge import get_knowledge_synthesizer
+        synth = get_knowledge_synthesizer()
+        connections = synth.on_new_research(topic, doc)
+        if connections.get("connections"):
+            _emit(f"Connected to {connections['new_entries']} existing knowledge areas")
+            doc += "\n\n## Knowledge Connections\n"
+            for c in connections["connections"]:
+                doc += f"- {c['existing_topic']} ({c['connection_type']})\n"
+    except Exception as exc:
+        log.debug("Knowledge synthesis note: %s", exc)
+
+    # 2. Skill distillation: extract actionable procedures
+    try:
+        from .skills import get_skill_extractor
+        extractor = get_skill_extractor()
+        new_skills = extractor.extract_from_research(topic, doc)
+        if new_skills:
+            _emit(f"Extracted {len(new_skills)} actionable skills")
+            doc += "\n\n## Actionable Procedures\n"
+            for skill in new_skills:
+                doc += f"- **Procedure**: {skill['procedure']}\n"
+    except Exception as exc:
+        log.debug("Skill distillation note: %s", exc)
+
     from .vault import write_note
     path = write_note(f"research {slug}", doc, tags=["research"])
 
