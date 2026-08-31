@@ -870,3 +870,15 @@ def emergency_kill_switch():
     return res
 
 
+@app.get("/api/autonomy/debt")
+def get_technical_debt_report():
+    from .self_improvement import get_self_improvement_engine
+    engine = get_self_improvement_engine()
+    return {
+        "ok": True,
+        "report": engine.technical_debt_report(),
+        "issues": engine.discovered_issues,
+    }
+
+
+

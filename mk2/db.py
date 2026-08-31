@@ -120,6 +120,11 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_topic ON events(topic);
 CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(spent_on);
 CREATE INDEX IF NOT EXISTS idx_traces_turn ON traces(turn_id);
+CREATE TABLE IF NOT EXISTS kv (
+    key TEXT PRIMARY KEY,
+    val TEXT NOT NULL,
+    updated_at REAL NOT NULL
+);
 """
 
 

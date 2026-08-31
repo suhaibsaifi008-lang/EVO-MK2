@@ -12,7 +12,10 @@ from ..browser_agent import get_browser_agent
 from ..consent import get_consent_manager
 from ..ethics import MoralVerdict, get_moral_engine
 
+from ..config import DATA
+
 log = logging.getLogger("mk2.platforms.upwork")
+SEEN_GIGS_FILE = DATA / "upwork_seen_gigs.json"
 
 
 class UpworkAgent:
@@ -21,6 +24,7 @@ class UpworkAgent:
     RATE_LIMITS = {
         "proposals_per_day": 5,
         "min_interval_seconds": 3600,
+        "min_scrape_interval_seconds": 3600,
         "max_bid_amount": 500.0,
     }
 
@@ -31,7 +35,120 @@ class UpworkAgent:
         self.audit = get_audit_logger()
         self.proposals_sent_today = 0
         self.last_proposal_ts = 0.0
+        self.last_scrape_ts = 0.0
         self.known_clients: set[str] = set()
+        self.seen_gigs: set[str] = set()
+        self._load_seen_gigs()
+
+    def _load_seen_gigs(self) -> None:
+        if SEEN_GIGS_FILE.exists():
+            try:
+                data = json.loads(SEEN_GIGS_FILE.read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    self.seen_gigs = set(data)
+            except Exception as exc:
+                log.debug("Failed loading seen gigs: %s", exc)
+
+    def _save_seen_gigs(self) -> None:
+        try:
+            SEEN_GIGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            SEEN_GIGS_FILE.write_text(json.dumps(list(self.seen_gigs)[-500:]), encoding="utf-8")
+        except Exception:
+            pass
+
+    def scrape_gigs(self, query: str = "Python automation", budget_max: float = 1000.0) -> MoralVerdict:
+        """Navigate to Upwork job search and scrape live gig listings with deduplication and safety gates."""
+        action = {"platform": "upwork", "action": "scrape_gigs", "query": query, "budget_max": budget_max}
+
+        # 1. Check consent for browser navigation
+        if not self.consent.has_consent("browser_navigate"):
+            return MoralVerdict.caution("Scraping Upwork gigs requires browser navigation consent.", action=action)
+
+        # 2. Check moral evaluation
+        v = self.ethics.evaluate(action)
+        if v.verdict == "block":
+            return v
+
+        # 3. Rate limiting: max 1 scrape per hour
+        now = time.time()
+        if (now - self.last_scrape_ts) < self.RATE_LIMITS.get("min_scrape_interval_seconds", 3600):
+            wait = int(self.RATE_LIMITS.get("min_scrape_interval_seconds", 3600) - (now - self.last_scrape_ts))
+            log.info("Upwork gig scrape throttled (%d seconds remaining)", wait)
+            return MoralVerdict.safe("Upwork scraping throttled by rate limit.", action={"gigs": [], "count": 0, "throttled": True})
+
+        # 4. Navigate to Upwork search
+        search_url = f"https://www.upwork.com/nx/jobs/search/?q={query.replace(' ', '%20')}"
+        nav_res = self.browser.navigate(search_url)
+        if nav_res.verdict != "safe":
+            return nav_res
+
+        # 5. Randomized wait (2-5s) to avoid bot detection
+        time.sleep(2.0 + (int(now) % 30) / 10.0)
+
+        # 6. Scrape and parse job tiles
+        scraped_raw: list[dict[str, Any]] = []
+        try:
+            if self.browser.page:
+                eval_script = """
+                () => {
+                    const tiles = document.querySelectorAll('article.job-tile, section.air3-card-section, [data-test="job-tile-list"] > section');
+                    const results = [];
+                    tiles.forEach((t, i) => {
+                        const titleEl = t.querySelector('h3 a, h2 a, [data-test="job-title-link"]');
+                        const descEl = t.querySelector('[data-test="job-description-text"], .job-description, p');
+                        const budgetEl = t.querySelector('[data-test="budget"], [data-test="is-fixed-price"], [data-test="job-type"]');
+                        if (titleEl) {
+                            results.push({
+                                id: titleEl.getAttribute('href') || `gig_${i}`,
+                                title: titleEl.innerText.trim(),
+                                url: titleEl.getAttribute('href') ? `https://www.upwork.com${titleEl.getAttribute('href')}` : '',
+                                description: descEl ? descEl.innerText.trim() : '',
+                                budget: budgetEl ? budgetEl.innerText.trim() : '$100.00',
+                            });
+                        }
+                    });
+                    return results;
+                }
+                """
+                extracted = self.browser.page.evaluate(eval_script)
+                if isinstance(extracted, list):
+                    scraped_raw = extracted
+        except Exception as exc:
+            log.debug("Upwork page evaluate note: %s", exc)
+
+        if not scraped_raw:
+            texts = self.browser.extract_text("article, .job-tile, section")
+            for i, txt in enumerate(texts[:5]):
+                if len(txt) > 30 and ("Python" in txt or "script" in txt or "bot" in txt or "automation" in txt or "API" in txt):
+                    lines = [l.strip() for l in txt.split("\\n") if l.strip()]
+                    scraped_raw.append({
+                        "id": f"scraped_text_{i}_{int(now)}",
+                        "title": lines[0] if lines else f"Python Automation Task #{i+1}",
+                        "description": txt[:400],
+                        "budget": "$150.00",
+                        "url": search_url,
+                    })
+
+        self.last_scrape_ts = now
+
+        # 7. Deduplicate & score with LLM
+        valid_gigs: list[dict[str, Any]] = []
+        for g in scraped_raw:
+            gid = str(g.get("id") or g.get("url") or g.get("title"))
+            if gid in self.seen_gigs:
+                continue
+            self.seen_gigs.add(gid)
+            self._save_seen_gigs()
+
+            score_res = self.evaluate_gig(g)
+            score = score_res.get("score", 5)
+            if score >= 6:
+                g["evaluation"] = score_res
+                g["score"] = score
+                valid_gigs.append(g)
+
+        self.audit.log_action(action, v, {"ok": True, "gigs_found": len(scraped_raw), "qualified": len(valid_gigs)})
+        return MoralVerdict.safe(f"Scraped {len(valid_gigs)} qualified Upwork gigs.", action={"gigs": valid_gigs, "count": len(valid_gigs)})
 
     def evaluate_gig(self, gig: dict[str, Any], user_skills: str = "") -> dict[str, Any]:
         """Score an Upwork job listing 1-10 on suitability, margin, and win rate."""

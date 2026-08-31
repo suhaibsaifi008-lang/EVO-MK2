@@ -22,18 +22,68 @@ class KillSwitch:
         self.browser = get_browser_agent()
         self.money = get_money_engine()
 
+    def stop_kernel_subsystems(self) -> int:
+        """Cancel all supervised asyncio kernel tasks."""
+        cancelled = 0
+        try:
+            from .kernel import get_kernel_tasks
+            for name, task in list(get_kernel_tasks().items()):
+                try:
+                    if not task.done():
+                        task.cancel()
+                        cancelled += 1
+                except Exception:
+                    pass
+        except Exception as exc:
+            log.debug("Kernel task cancellation note: %s", exc)
+        return cancelled
+
     def stop_all(self, reason: str = "User triggered emergency stop") -> dict[str, Any]:
         t0 = time.perf_counter()
-        self.money.stop()
-        self.browser.stop()
+        
+        # 1. Stop money engine
+        try:
+            self.money.stop()
+        except Exception:
+            pass
+
+        # 2. Stop browser agent
+        try:
+            self.browser.stop()
+        except Exception:
+            pass
+
+        # 3. Stop JARVIS brain thread
+        try:
+            from .jarvis_agent import get_jarvis_agent
+            get_jarvis_agent().stop()
+        except Exception:
+            pass
+
+        # 4. Cancel all supervised kernel tasks
+        tasks_cancelled = self.stop_kernel_subsystems()
+
+        # 5. Stop Telegram if running
+        try:
+            from . import telegram_link
+            tg_event = getattr(telegram_link, "_telegram_stop_event", None)
+            if tg_event:
+                tg_event.set()
+        except Exception:
+            pass
+
+        # 6. Downgrade consent level
         self.consent.set_level("assist")
+
         dt_ms = (time.perf_counter() - t0) * 1000.0
-        log.warning("EMERGENCY KILL SWITCH: All autonomous systems halted in %.2fms. Reason: %s", dt_ms, reason)
+        log.warning("EMERGENCY KILL SWITCH: All autonomous systems halted in %.2fms (%d kernel tasks cancelled). Reason: %s",
+                    dt_ms, tasks_cancelled, reason)
 
         res = {
             "ok": True,
             "status": "halted",
             "consent_level": "assist",
+            "kernel_tasks_cancelled": tasks_cancelled,
             "latency_ms": round(dt_ms, 2),
             "reason": reason,
         }

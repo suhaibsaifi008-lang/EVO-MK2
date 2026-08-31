@@ -47,7 +47,7 @@ class MoralEngine:
 
     # Explicit hard-blocks: zero tolerance
     HARD_BLOCK_PATTERNS = [
-        (r"\b(fake review|fake rating|buy followers|fake testimonial)\b", "Violates platform terms of service and compromises integrity."),
+        (r"\b(fake reviews?|fake ratings?|buy followers|fake testimonials?)\b", "Violates platform terms of service and compromises integrity."),
         (r"\b(password dump|credential leak|steal cookies|exfiltrate data)\b", "High security and privacy risk."),
         (r"\b(mass email|email blast|scrape emails|unsolicited spam|spam 50)\b", "High probability of triggering spam blacklists and damaging reputation."),
         (r"\b(crypto drainer|wallet transfer|wire money|unauthorized payment)\b", "Critical financial risk."),

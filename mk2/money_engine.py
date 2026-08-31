@@ -39,6 +39,8 @@ class MoneyEngine:
         self.queue = get_approval_queue()
         self.email = get_email_agent()
         self.upwork = UpworkAgent()
+        from .financial_intelligence import get_financial_intelligence
+        self.finance = get_financial_intelligence()
         self.last_tick_ts = 0.0
 
     def start(self) -> bool:
@@ -104,7 +106,13 @@ class MoneyEngine:
         if not best:
             return {"ok": True, "picked": None}
 
-        # 4. Route: Auto-Approved vs Queue for Approval
+        # 4. Deep financial intelligence evaluation
+        try:
+            best["deep_evaluation"] = self.finance.evaluate_opportunity(best)
+        except Exception as exc:
+            log.debug("Financial intelligence evaluation note: %s", exc)
+
+        # 5. Route: Auto-Approved vs Queue for Approval
         act_type = best.get("type", "opportunity")
         is_trusted = self.consent.is_auto_approved(act_type)
 
@@ -126,7 +134,7 @@ class MoneyEngine:
         """Gather potential gigs and outreach targets from all connected sources."""
         results: list[dict[str, Any]] = []
 
-        # Check Email inbox
+        # 1. Check Email inbox
         try:
             inbox_opps = self.email.read_inbox(limit=10, filter_opportunities=True)
             for m in inbox_opps:
@@ -139,6 +147,26 @@ class MoneyEngine:
                 })
         except Exception as exc:
             log.debug("Email scan error: %s", exc)
+
+        # 2. Check Upwork for live gig listings
+        try:
+            from .preference_learner import get_preference_learner
+            prefs = get_preference_learner().get_preference("user_profile")
+            skills = prefs.get("skills", "Python Automation")
+            scrape_res = self.upwork.scrape_gigs(query=skills)
+            if scrape_res.verdict == "safe" and scrape_res.action:
+                gigs = scrape_res.action.get("gigs", [])
+                for g in gigs:
+                    results.append({
+                        "platform": "upwork",
+                        "type": "proposal_submit",
+                        "title": g.get("title", "Upwork Opportunity"),
+                        "budget": g.get("budget", "$100.00"),
+                        "gig": g,
+                        "evaluation": g.get("evaluation"),
+                    })
+        except Exception as exc:
+            log.debug("Upwork scan error: %s", exc)
 
         return results
 

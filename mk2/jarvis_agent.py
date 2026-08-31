@@ -1,4 +1,4 @@
-"""The Master JARVIS Brain for EVO MK2 (JARVIS Phase 10 / Task 7 & 10)."""
+"""The Master JARVIS Brain for EVO MK2 (JARVIS Phase 10 / Tasks 4, 5, 6)."""
 from __future__ import annotations
 
 import logging
@@ -11,12 +11,14 @@ from .comms_intelligence import get_comms_intelligence
 from .consent import get_consent_manager
 from .email_agent import get_email_agent
 from .ethics import get_moral_engine
+from .financial_intelligence import get_financial_intelligence
 from .knowledge_agent import get_knowledge_agent
 from .llm_rate_limiter import get_llm_rate_limiter
 from .money_engine import get_money_engine
 from .research_agent import get_research_agent
 from .schedule_agent import get_schedule_agent
 from .security_agent import get_security_agent
+from .self_improvement import get_self_improvement_engine
 from .synthesis import get_synthesis_engine
 from .wellness_agent import get_wellness_agent
 
@@ -43,6 +45,8 @@ class JarvisAgent:
         self.wellness = get_wellness_agent()
         self.money = get_money_engine()
         self.synthesis = get_synthesis_engine()
+        self.finance = get_financial_intelligence()
+        self.self_improve = get_self_improvement_engine()
         self.rate_limiter = get_llm_rate_limiter()
 
         self.last_tick_ts = 0.0
@@ -74,12 +78,21 @@ class JarvisAgent:
                 slept += 2
 
     def _check_research_topics(self) -> list[str]:
-        """Check if any monitored topics have fresh developments (Task 7)."""
+        """Check if any monitored topics have fresh developments."""
         try:
             return self.research.check_monitored_topics()
         except Exception as exc:
             log.debug("Research topic check error: %s", exc)
             return []
+
+    def _should_run_daily(self, check_name: str) -> bool:
+        """Run a check at most once per day (86400 seconds)."""
+        last_run = getattr(self, f"_last_{check_name}_ts", 0.0)
+        now = time.time()
+        if now - last_run < 86400:
+            return False
+        setattr(self, f"_last_{check_name}_ts", now)
+        return True
 
     def tick(self) -> dict[str, Any]:
         self.last_tick_ts = time.time()
@@ -98,12 +111,12 @@ class JarvisAgent:
         if w_res.verdict == "caution":
             findings.append(w_res.reasoning)
 
-        # 3. Research topic developments (Task 7)
+        # 3. Research topic developments
         r_alerts = self._check_research_topics()
         if r_alerts:
             findings.extend(r_alerts)
 
-        # 4. Proactive cross-domain suggestion (Task 8)
+        # 4. Proactive cross-domain suggestion
         if self.rate_limiter.allow():
             try:
                 sugg = self.synthesis.proactive_suggestion()
@@ -112,7 +125,27 @@ class JarvisAgent:
             except Exception as exc:
                 log.debug("Proactive suggestion error: %s", exc)
 
-        # 5. Money scan
+        # 5. Financial briefing (once per day)
+        if self._should_run_daily("financial_briefing"):
+            try:
+                briefing = self.finance.financial_briefing()
+                if briefing and len(briefing) > 50:
+                    findings.append(f"Financial briefing: {briefing[:100]}...")
+            except Exception as exc:
+                log.debug("Daily financial briefing note: %s", exc)
+
+        # 6. Self-improvement scan (once per day)
+        if self._should_run_daily("self_improvement"):
+            try:
+                issues = self.self_improve.analyze_codebase()
+                if issues:
+                    high_priority = [i for i in issues if i.get("severity") in ("critical", "high")]
+                    if high_priority:
+                        findings.append(f"Self-improvement: {len(high_priority)} code improvements identified")
+            except Exception as exc:
+                log.debug("Daily self-improvement scan note: %s", exc)
+
+        # 7. Money scan
         if self.consent.has_consent("autonomy_execute"):
             m_res = self.money.tick()
             if m_res.get("enqueued_id"):

@@ -5,14 +5,20 @@ import os
 import threading
 import sys
 
-from . import db, llm, tools
+from . import config, db, llm, tools
 from .bus import bus
 
 log = logging.getLogger("mk2.kernel")
 
 _tasks: dict[str, asyncio.Task] = {}
+_global_kernel_tasks: dict[str, asyncio.Task] = {}
 _restarts: dict[str, int] = {}
 _loop: asyncio.AbstractEventLoop | None = None
+
+
+def get_kernel_tasks() -> dict[str, asyncio.Task]:
+    """Return all active supervised kernel asyncio tasks."""
+    return _global_kernel_tasks
 
 
 def _supervise(name: str, factory) -> asyncio.Task:
@@ -66,6 +72,7 @@ def _supervise(name: str, factory) -> asyncio.Task:
 
     task = _loop.create_task(runner(), name=name)
     _tasks[name] = task
+    _global_kernel_tasks[name] = task
     return task
 
 
