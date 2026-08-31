@@ -3,11 +3,15 @@ import json
 import sqlite3
 import threading
 import time
+import logging
 
 from .config import DATA
 
+log = logging.getLogger('mk2.db')
+
 DB_PATH = DATA / "evo_mk2.db"
-_lock = threading.Lock()
+# RLock allows reentrant calls within the same thread (e.g. migrations that read+write).
+_lock = threading.RLock()
 
 SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -169,8 +173,10 @@ def log_message(role: str, content: str, surface: str = "console") -> int:
             "INSERT INTO messages(role,content,surface,ts) VALUES(?,?,?,?)",
             (role, content[:6000], surface, time.time()),
         )
-        c.execute("DELETE FROM messages WHERE id <= (SELECT MAX(id)-5000 FROM messages)")
-        return int(cur.lastrowid or 0)
+        row_id = int(cur.lastrowid or 0)
+        if row_id % 100 == 0:  # only check every 100 inserts
+            c.execute("DELETE FROM messages WHERE id <= (SELECT MAX(id)-5000 FROM messages)")
+        return row_id
 
 
 def recent_messages(limit: int = 20) -> list[dict]:
@@ -200,8 +206,9 @@ def remember_fact(key: str, value: str, source: str = "explicit") -> None:
 
 
 def forget_fact(key: str) -> bool:
+    key = key.strip().lower()[:80]
     with _lock, connect() as c:
-        cur = c.execute("DELETE FROM facts WHERE key=?", (key.strip().lower(),))
+        cur = c.execute("DELETE FROM facts WHERE key=?", (key,))
         return cur.rowcount > 0
 
 
@@ -409,7 +416,8 @@ def record_event(topic: str, payload: dict | str) -> None:
                 "INSERT INTO events(topic, payload, created_at) VALUES(?, ?, ?)",
                 (topic, payload_str, time.time())
             )
-    except Exception:
+    except Exception as exc:
+        log.warning('db.record_event: %s', exc)
         pass
 
 
@@ -428,7 +436,8 @@ def get_recent_events(limit: int = 50, topic: str = "") -> list[dict]:
                     (limit,)
                 ).fetchall()
             return [dict(r) for r in rows]
-    except Exception:
+    except Exception as exc:
+        log.warning('db.get_recent_events: %s', exc)
         return []
 
 
@@ -445,11 +454,13 @@ def replay_events(since_ts: float, limit: int = 200) -> list[dict]:
                 d = dict(r)
                 try:
                     d["payload"] = json.loads(d["payload"])
-                except Exception:
+                except Exception as exc:
+                    log.warning('db.replay_events: %s', exc)
                     pass
                 out.append(d)
             return out
-    except Exception:
+    except Exception as exc:
+        log.warning('db.replay_events: %s', exc)
         return []
 
 
@@ -460,7 +471,8 @@ def get_last_shutdown_ts() -> float:
             row = c.execute("SELECT val FROM kv WHERE key='system:last_shutdown'").fetchone()
             if row:
                 return float(row["val"])
-    except Exception:
+    except Exception as exc:
+        log.warning('db.get_last_shutdown_ts: %s', exc)
         pass
     return 0.0
 
@@ -476,7 +488,8 @@ def set_last_shutdown_ts(ts: float | None = None) -> None:
                 "ON CONFLICT(key) DO UPDATE SET val=excluded.val, updated_at=excluded.updated_at",
                 (str(float(ts)), time.time())
             )
-    except Exception:
+    except Exception as exc:
+        log.warning('db.set_last_shutdown_ts: %s', exc)
         pass
 
 
@@ -489,7 +502,8 @@ def save_anecdote(name: str, narrative: str, emotion: str = "general") -> int:
                 (name, narrative, emotion, time.time()),
             )
             return cur.lastrowid
-    except Exception:
+    except Exception as exc:
+        log.warning('db.save_anecdote: %s', exc)
         return 0
 
 
@@ -502,7 +516,8 @@ def anecdotes_by_emotion(emotion: str, limit: int = 5) -> list[dict]:
                 (emotion, limit),
             )
             return [dict(r) for r in cur.fetchall()]
-    except Exception:
+    except Exception as exc:
+        log.warning('db.anecdotes_by_emotion: %s', exc)
         return []
 
 
@@ -515,7 +530,8 @@ def all_anecdotes(limit: int = 20) -> list[dict]:
                 (limit,),
             )
             return [dict(r) for r in cur.fetchall()]
-    except Exception:
+    except Exception as exc:
+        log.warning('db.all_anecdotes: %s', exc)
         return []
 
 
@@ -535,6 +551,7 @@ def import_messages(messages_list: list[dict]) -> int:
                         (role, content, surface, ts),
                     )
                     imported += 1
-    except Exception:
+    except Exception as exc:
+        log.warning('db.import_messages: %s', exc)
         pass
     return imported

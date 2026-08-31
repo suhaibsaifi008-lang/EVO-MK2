@@ -98,6 +98,11 @@ def test_revenue_tracker():
 
 
 def test_fast_path_emergency_kill():
-    reply = _fast_path("EVO, stop everything!")
-    assert reply is not None
-    assert "Emergency stop confirmed" in reply
+    from mk2.consent import get_consent_manager
+    cm = get_consent_manager()
+    try:
+        reply = _fast_path("EVO, stop everything!")
+        assert reply is not None
+        assert "Emergency stop confirmed" in reply
+    finally:
+        cm.set_level("assist")

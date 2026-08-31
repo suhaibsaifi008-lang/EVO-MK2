@@ -50,7 +50,7 @@ def _host_allowed(host: str) -> bool:
 def _nav_allowed(url: str) -> bool:
     u = urlparse(url)
     if u.scheme in ("file", "data"):
-        return True
+        return False  # H15: block file:// and data:// schemes
     if u.scheme not in ("http", "https"):
         return False
     host = (u.hostname or "").lower()

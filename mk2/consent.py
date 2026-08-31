@@ -23,20 +23,26 @@ CONSENT_LEVELS = ["none", "read", "assist", "execute", "full"]
 ACTIONS_BY_LEVEL = {
     "none": [],
     "read": [
-        "web_search", "screen_read", "weather", "calendar_read", "vault_read",
-        "doc_read", "reminder_list", "todo_list", "time", "date"
+        "web_search", "screen_read", "weather", "weather_now", "calendar_read", "calendar_today",
+        "calendar_upcoming", "vault_read", "vault_search", "vault_list", "doc_read", "reminder_list",
+        "todo_list", "time", "date", "system_info", "clipboard_get", "tts_list_voices", "tts_voices",
+        "fs_read", "youtube_summarize", "tool_help", "proposals_list"
     ],
     "assist": [
-        "fs_write", "docs_create", "deep_research", "translate", "screenshot",
-        "vault_write", "doc_export", "note_create"
+        "fs_write", "docs_create", "docs_append", "deep_research", "translate", "screenshot",
+        "vault_write", "doc_export", "note_create", "clipboard_set", "timer_set", "timer_list",
+        "timer_cancel", "reminder_set", "reminder_add", "reminder_cancel", "todo_add", "todo_done",
+        "task_start", "task_status", "task_stop", "task_resume", "task_retry", "tts_speak",
+        "tts_set_voice", "tts_rate", "remember_episode", "browser_navigate", "browser_screenshot",
+        "browser_open", "browser_read", "app_open", "open_app", "pc_control", "volume_set",
+        "volume_get", "close_app", "mail_draft"
     ],
     "execute": [
-        "browser_navigate", "browser_screenshot", "timer_set", "todo_add",
-        "reminder_set", "app_open", "pc_control"
+        "browser_click", "browser_type", "browser_act", "mouse_click", "type_text", "press_key"
     ],
     "full": [
-        "browser_click", "browser_type", "mail_send", "shell_run",
-        "autonomy_execute", "proposal_submit", "stripe_invoice"
+        "mail_send", "shell_run", "autonomy_execute", "proposal_submit", "stripe_invoice",
+        "process_kill"
     ],
 }
 
@@ -95,7 +101,7 @@ class ConsentManager:
     def get_level(self) -> str:
         return self.current_level
 
-    def set_level(self, level: str) -> bool:
+    def set_level(self, level: str, require_user_confirmation: bool = True) -> bool:
         lvl = level.strip().lower()
         if lvl not in CONSENT_LEVELS:
             return False
@@ -117,6 +123,16 @@ class ConsentManager:
         for lvl in CONSENT_LEVELS:
             if act in ACTIONS_BY_LEVEL.get(lvl, []):
                 return lvl
+        # If action is registered in tools, check its declared permission
+        try:
+            from .tools import _REGISTRY
+            if act in _REGISTRY:
+                perm = getattr(_REGISTRY[act], "permission", "execute")
+                if perm in ("read", "info"):
+                    return "read"
+                return "assist"
+        except Exception:
+            pass
         # Default unlisted actions to 'full' for safety
         return "full"
 
@@ -135,12 +151,20 @@ class ConsentManager:
     def is_auto_approved(self, action_type: str) -> bool:
         """Check if an action type has earned sufficient consecutive successful precedents."""
         act = action_type.strip().lower()
-        prec = self.action_precedents.get(act, {})
-        streak = prec.get("consecutive_success", 0)
 
         # High and critical risk actions NEVER auto-approve
         if act in _RISK_TIERS["critical"] or act in _RISK_TIERS["high"]:
             return False
+
+        streak = 0
+        for entry in reversed(self.audit_log):
+            if entry.get("event") == "level_changed":
+                continue
+            if entry.get("action") == act:
+                if not entry.get("success"):
+                    break
+                if entry.get("source", "user") in ("user", "confirmed"):
+                    streak += 1
 
         if act in _RISK_TIERS["medium"]:
             return streak >= 5
@@ -148,7 +172,7 @@ class ConsentManager:
         # Safe actions or default standard actions (3 precedents)
         return streak >= 3
 
-    def record_outcome(self, action_type: str, success: bool, details: str = "") -> None:
+    def record_outcome(self, action_type: str, success: bool, details: str = "", source: str = "user") -> None:
         """Record outcome of an action to build or decrement trust."""
         act = action_type.strip().lower()
         if act not in self.action_precedents:
@@ -171,6 +195,7 @@ class ConsentManager:
             "ts": time.time(),
             "action": act,
             "success": success,
+            "source": source,
             "details": details[:200],
             "streak": p["consecutive_success"],
         })

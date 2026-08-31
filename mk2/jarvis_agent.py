@@ -85,14 +85,35 @@ class JarvisAgent:
             log.debug("Research topic check error: %s", exc)
             return []
 
+    def _load_daily_state(self) -> dict:
+        import json
+        from .config import DATA
+        _STATE_FILE = DATA / "jarvis_state.json"
+        if _STATE_FILE.exists():
+            try:
+                return json.loads(_STATE_FILE.read_text())
+            except Exception:
+                return {}
+        return {}
+
+    def _save_daily_state(self, state: dict) -> None:
+        import json
+        from .config import DATA
+        _STATE_FILE = DATA / "jarvis_state.json"
+        _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _STATE_FILE.write_text(json.dumps(state))
+
     def _should_run_daily(self, check_name: str) -> bool:
         """Run a check at most once per day (86400 seconds)."""
-        last_run = getattr(self, f"_last_{check_name}_ts", 0.0)
+        state = self._load_daily_state()
+        last_run = state.get(f"_last_{check_name}_ts", 0.0)
         now = time.time()
         if now - last_run < 86400:
             return False
-        setattr(self, f"_last_{check_name}_ts", now)
+        state[f"_last_{check_name}_ts"] = now
+        self._save_daily_state(state)
         return True
+
 
     def tick(self) -> dict[str, Any]:
         self.last_tick_ts = time.time()

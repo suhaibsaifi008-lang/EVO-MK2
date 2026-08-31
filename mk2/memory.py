@@ -5,6 +5,7 @@ Write policy is enforced here - not in prompts:
  - inferred facts only on substance, rate-limited, sensitive skipped unless explicit
 """
 import json
+import os
 import re
 import threading
 import time
@@ -16,7 +17,8 @@ from . import config, db, llm
 _lock = threading.Lock()
 _state = {"turns_since_extract": 0}
 _opinions_store = {}
-_continuity_log = []
+from collections import deque as _deque
+_continuity_log: _deque = _deque(maxlen=1000)
 _relationship_depth = {
 	"interaction_frequency": 0,
 	"depth_score": 0,
@@ -73,19 +75,22 @@ def track_opinion(topic: str, text: str, sentiment: str = None) -> None:
 		"ts": datetime.now().isoformat(),
 		"count": 1,
 	}
-	if topic not in _opinions_store:
-		_opinions_store[topic] = entry
-		return
-	existing = _opinions_store[topic]
-	if existing["sentiment"] == sentiment:
-		existing["count"] = min(existing["count"] + 1, 10)
-	else:
-		existing["count"] = max(1, existing["count"] - 1)
-		if existing["count"] <= 1:
-			existing["sentiment"] = "mixed"
-			existing["text"] = f"{existing['text'][:120]}; {text[:120]}"
-	existing["ts"] = datetime.now().isoformat()
-	existing["text"] = (existing["text"] + "; " + text)[:300]
+	with _lock:
+		if topic not in _opinions_store:
+			_opinions_store[topic] = entry
+			return
+		existing = _opinions_store[topic]
+		if existing["sentiment"] == sentiment:
+			existing["count"] = min(existing["count"] + 1, 10)
+		else:
+			existing["count"] = max(1, existing["count"] - 1)
+			if existing["count"] <= 1:
+				existing["sentiment"] = "mixed"
+				existing["text"] = f"{existing['text'][:120]}; {text[:120]}"
+		existing["ts"] = datetime.now().isoformat()
+		if len(existing["text"]) < 280:
+			existing["text"] = f"{existing['text']}; {text}"[:300]
+
 
 
 def get_user_opinions() -> dict[str, dict]:
@@ -318,7 +323,7 @@ def continuity_references(user_text: str, max_refs: int = 2) -> list[str]:
 
 def get_continuity_references(user_text: str) -> str:
 	"""Format recent continuity references into natural conversational context."""
-	refs = find_continuity_references(user_text)
+	refs = continuity_references(user_text)
 	if not refs:
 		return ""
 	return "; ".join(refs)
@@ -359,7 +364,7 @@ def build_context_messages(user_text: str, surface: str = "console") -> list[dic
 		persona_text = persona_block(max_chars=900 if len(user_text.strip()) < 5 else 2000)
 	except Exception:
 		persona_text = ""
-	system = (persona_text or base_persona) + "\n" + base_persona
+	system = persona_text or base_persona
 
 	try:
 		from . import style_controller
@@ -420,12 +425,17 @@ def build_context_messages(user_text: str, surface: str = "console") -> list[dic
 		from . import llm
 		max_tokens = int(os.environ.get("EVO_MAX_CONTEXT_TOKENS", "80000"))
 		tokens = llm.estimate_tokens(msgs)
-		while tokens > max_tokens * 0.85 and len(msgs) > 3:
+		for _compact_iter in range(100):
+			if tokens <= max_tokens * 0.85 or len(msgs) <= 4:
+				break
 			for i in range(len(msgs) - 1, 0, -1):
 				if msgs[i].get("role") != "system":
 					msgs.pop(i)
 					break
 			tokens = llm.estimate_tokens(msgs)
+		else:
+			import logging
+			logging.getLogger('mk2.memory').warning('Compaction hit 100-iteration limit')
 	except Exception:
 		pass
 
@@ -510,15 +520,7 @@ def record_turn(user_text: str, reply: str, surface: str) -> None:
 				pass
 		except Exception:
 			pass
-	try:
-		if _is_personality_relevant(user_text, reply):
-			pers = extract_personality_context(user_text, reply)
-			for p in pers:
-				if p.get("key") and p.get("value"):
-					db.remember_fact(p["key"], p["value"], source="personality")
-					update_opinion(p["key"], p["value"])
-	except Exception:
-		pass
+
 
 	# Phase 3: Periodic User Profile Extraction
 	try:
@@ -628,7 +630,7 @@ def summarize_and_archive() -> bool:
 			if isinstance(parsed, list):
 				triples_json = json.dumps(parsed)
 		except Exception:
-			mm = re.search(r"\[.*\]", m.group(1), re.DOTALL)
+			mm = re.search(r'TRIPLES\s*:?\s*(\[.*\])', m.group(1), re.DOTALL)
 			if mm:
 				try:
 					triples_json = json.dumps(json.loads(mm.group(0)))

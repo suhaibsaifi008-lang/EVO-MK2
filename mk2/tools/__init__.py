@@ -140,12 +140,21 @@ def call(name: str, args: dict | None = None) -> dict:
         }
 
     try:
+        from ..consent import get_consent_manager
+        cm = get_consent_manager()
+        if not cm.has_consent(name):
+            db.audit(name, str(args)[:200], False, f"consent denied for {name}")
+            return {"ok": False, "speech": f"Consent denied: cannot execute '{name}'.", "data": {}}
         from ..autonomy import is_allowed
         if not is_allowed(name, t.permission):
             db.audit(name, _masked_args(args), False, f"permission denied for {name} ({t.permission})")
             return {"ok": False, "speech": f"permission denied: cannot execute '{name}'.", "data": {}}
     except ImportError:
         pass
+
+    from ..kill_switch import get_kill_switch
+    if getattr(get_kill_switch(), "is_active", lambda: False)():
+        return {"ok": False, "speech": "Kill switch active — all tools disabled.", "data": {}}
 
     retries = _RETRY_COUNT if name in _RETRYABLE else 0
     last_exc = None

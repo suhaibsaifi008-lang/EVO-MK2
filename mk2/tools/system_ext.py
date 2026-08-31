@@ -50,6 +50,12 @@ def process_list(limit=30):
 		return {"ok": False, "speech": f"Failed: {exc}", "data": {}}
 
 
+_PROTECTED_PROCESSES = {
+    "lsass", "csrss", "winlogon", "services", "wininit", "smss",
+    "system", "registry", "dwm", "svchost", "fontdrvhost",
+    "lsaiso", "ntoskrnl", "conhost",
+}
+
 @tool("process_kill", "Kill a process by name or PID.",
 	{"target": {"type": "string"}}, permission="execute")
 def process_kill(target=""):
@@ -67,6 +73,8 @@ def process_kill(target=""):
 				match = (target_int is not None and pid == target_int) or \
 						 (target_int is None and target.lower() in name)
 				if match:
+					if name in _PROTECTED_PROCESSES or pid < 100:
+						continue  # skip critical system processes
 					p.terminate()
 					killed.append(f"{name} (pid {pid})")
 			except (psutil.NoSuchProcess, psutil.AccessDenied):

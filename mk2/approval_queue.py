@@ -60,6 +60,7 @@ class ApprovalQueue:
             "action": action,
             "verdict": verdict.to_dict() if verdict else {},
             "status": "pending",
+            "expires": time.time() + 3600,
         }
         self.pending[item_id] = entry
         self._save()
@@ -68,7 +69,10 @@ class ApprovalQueue:
 
     def get_pending(self) -> list[dict[str, Any]]:
         """List all actions currently awaiting user review."""
-        return sorted(list(self.pending.values()), key=lambda x: x.get("ts", 0), reverse=True)
+        now = time.time()
+        # Filter out expired items
+        valid_items = [v for v in self.pending.values() if v.get("expires", now + 1) > now]
+        return sorted(valid_items, key=lambda x: x.get("ts", 0), reverse=True)
 
     def get_item(self, item_id: str) -> Optional[dict[str, Any]]:
         return self.pending.get(item_id)
@@ -78,6 +82,8 @@ class ApprovalQueue:
         item = self.pending.pop(item_id, None)
         if not item:
             return {"ok": False, "error": f"Item #{item_id} not found."}
+        if item.get("expires", time.time() + 1) < time.time():
+            return {"ok": False, "error": f"Item #{item_id} has expired."}
 
         item["status"] = "approved"
         item["resolved_ts"] = time.time()

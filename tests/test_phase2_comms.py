@@ -92,6 +92,17 @@ class TestTelegramPairingLock:
 # -------------------------------------------------------------------- mail
 
 class TestMailDraftFirstGating:
+    import pytest
+
+    @pytest.fixture(autouse=True)
+    def _elevate_consent(self):
+        from mk2.consent import get_consent_manager
+        cm = get_consent_manager()
+        old = cm.get_level()
+        cm.set_level("full")
+        yield
+        cm.set_level(old)
+
     def test_draft_creates_file_and_audits(self, tmp_path):
         from mk2 import mail_tools as mt
 

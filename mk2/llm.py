@@ -86,7 +86,7 @@ def _penalize(prov_name: str, model: str, err: str, hard: bool | None = None) ->
                                       "rate-limit", "exceeded", "insufficient",
                                       "token limit", "payment"))
     with _cd_lock:
-        _cooldowns[f"{prov_name}:{model}"] = time.time() + (900 if hard else 60)
+        _cooldowns[f"{prov_name}:{model}"] = time.time() + (900 if hard else 15)
 
 
 def penalize_stall(prov_name: str, model: str) -> None:

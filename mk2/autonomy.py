@@ -794,7 +794,11 @@ class AutonomousRunner:
 
             b = get_browser()
             if action == "navigate":
-                return b.navigate(action_data.get("url", "https://google.com"))
+                url = action_data.get("url", "https://google.com")
+                from .tools.browser_tools import _nav_allowed
+                if not _nav_allowed(url):
+                    return {"ok": False, "speech": f"URL blocked by allowlist: {url}", "data": {}}
+                return b.navigate(url)
             elif action == "click":
                 return b.click(action_data.get("selector", "button"))
             elif action == "type":

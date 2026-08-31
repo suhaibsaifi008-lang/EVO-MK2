@@ -28,10 +28,9 @@ CONTRACT = (
 # blocklist, not a sandbox - it raises the bar sharply and pairs with the
 # test-run gate below.
 BANNED_MODULES = {"subprocess", "socket", "ctypes", "multiprocessing",
-                  "http.server", "socketserver", "winreg"}
+                  "http.server", "socketserver", "winreg", "os", "shutil"}
 BANNED_NAMES = {"eval", "exec", "compile", "__import__", "system", "popen",
-                "spawn", "fork", "kill"}
-
+                "spawn", "fork", "kill", "getattr", "setattr", "globals", "locals", "delattr", "vars"}
 
 def audit_code(code: str) -> None:
     """Raise ValueError if the code touches banned capabilities."""
@@ -54,6 +53,8 @@ def audit_code(code: str) -> None:
         elif isinstance(node, _ast.Attribute):
             if node.attr in BANNED_NAMES:
                 raise ValueError(f"banned call '.{node.attr}()'")
+            if node.attr in ('__class__', '__bases__', '__subclasses__', '__mro__', '__builtins__', '__globals__', '__code__'):
+                raise ValueError(f"banned attribute '.{node.attr}'")
         elif isinstance(node, (_ast.Call,)):
             fn = node.func
             name = getattr(fn, "id", None) or getattr(fn, "attr", None)
@@ -190,12 +191,18 @@ def load_all() -> int:
     if not SKILLS_DIR.exists():
         return 0
     count = 0
+    import logging
+    _log = logging.getLogger('mk2.skills')
     for py_path in sorted(SKILLS_DIR.glob("*.py")):
         try:
+            code = py_path.read_text(encoding='utf-8')
+            validate_code(code)
             _register(py_path.stem, str(py_path))
             count += 1
-        except Exception:
-            pass
+        except ValueError as ve:
+            _log.warning('Skipping skill %s: validation failed: %s', py_path.stem, ve)
+        except Exception as exc:
+            _log.warning('Skipping skill %s: %s', py_path.stem, exc)
     return count
 
 

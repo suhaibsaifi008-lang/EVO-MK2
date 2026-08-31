@@ -93,15 +93,18 @@ def test_security_and_wellness():
 
 def test_kill_switch_and_jarvis_brain():
     ks = KillSwitch()
-    halt = ks.stop_all("Automated Test Stop")
-    assert halt["ok"]
-    assert halt["latency_ms"] < 50
-    assert halt["status"] == "halted"
+    try:
+        halt = ks.stop_all("Automated Test Stop")
+        assert halt["ok"]
+        assert halt["latency_ms"] < 50
+        assert halt["status"] == "halted"
 
-    ja = JarvisAgent()
-    tick_out = ja.tick()
-    assert tick_out["ok"]
-    assert isinstance(tick_out["findings"], list)
+        ja = JarvisAgent()
+        tick_out = ja.tick()
+        assert tick_out["ok"]
+        assert isinstance(tick_out["findings"], list)
+    finally:
+        ks.downgrade_to("assist")
 
 
 def test_learning_subsystems():

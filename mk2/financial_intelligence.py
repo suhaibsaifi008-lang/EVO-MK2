@@ -267,11 +267,15 @@ class FinancialIntelligence:
                 "3. High-Leverage Strategic Recommendations (2 specific action items today)\n"
             )
 
-            reply = llm.chat([
-                {"role": "system", "content": "You are EVO's chief financial officer and growth advisor."},
-                {"role": "user", "content": prompt},
-            ], role="fast", temperature=0.2)
-            return reply.strip()
+            try:
+                reply = llm.chat([
+                    {"role": "system", "content": "You are EVO's chief financial officer and growth advisor."},
+                    {"role": "user", "content": prompt},
+                ], role="fast", temperature=0.2, timeout=15)
+                return reply.strip()
+            except Exception as exc_llm:
+                log.warning("Financial briefing synthesis LLM timeout/error: %s", exc_llm)
+                return f"Total Tracked Revenue: ${total_earned:.2f}\nProposals Sent: {stages.get('proposal_sent', 0)}\nClient Responses: {stages.get('client_responded', 0)}\nHired / Contracts: {stages.get('hired', 0)}\nDeliveries Completed: {stages.get('delivered', 0)}\nPayouts Received: {stages.get('paid', 0)}"
         except Exception as exc:
             log.warning("Financial briefing synthesis failed: %s", exc)
             return f"Financial briefing unavailable: {exc}"

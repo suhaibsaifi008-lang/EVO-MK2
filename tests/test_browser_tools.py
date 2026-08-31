@@ -104,7 +104,8 @@ def test_open_allowed_domain(fake_browser):
 def test_localhost_and_file_always_allowed(fake_browser):
     B, _page = fake_browser
     assert B._nav_allowed("http://127.0.0.1:8421/") is True
-    assert B._nav_allowed("file:///C:/tmp/page.html") is True
+    assert B._nav_allowed("file:///C:/tmp/page.html") is False  # H15: file:// blocked
+    assert B._nav_allowed("data:text/html,<h1>x</h1>") is False  # H15: data:// blocked
     assert B._nav_allowed("ftp://x") is False
 
 

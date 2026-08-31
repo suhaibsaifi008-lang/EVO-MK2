@@ -18,7 +18,6 @@ log = logging.getLogger("mk2.security.voiceprint")
 VOICEPRINT_FILE = config.DATA / "vault" / "voiceprint.json"
 _lockout_until = 0.0
 _consecutive_fails = 0
-_DEFAULT_PIN_HASH = hashlib.sha256(b"1008").hexdigest()  # Default PIN: 1008 (or env EVO_PIN)
 
 
 def _extract_spectral_features(audio_bytes: bytes, sample_rate: int = 16000) -> np.ndarray:
@@ -140,7 +139,9 @@ def verify_pin(pin: str) -> bool:
     """Verify fallback security PIN."""
     global _consecutive_fails, _lockout_until
     env_pin = os.environ.get("EVO_PIN", "").strip()
-    target_hash = hashlib.sha256(env_pin.encode()).hexdigest() if env_pin else _DEFAULT_PIN_HASH
+    if not env_pin:
+        return False
+    target_hash = hashlib.sha256(env_pin.encode()).hexdigest()
     in_hash = hashlib.sha256(str(pin).strip().encode()).hexdigest()
     if in_hash == target_hash:
         _consecutive_fails = 0

@@ -73,7 +73,7 @@ class KillSwitch:
             log.warning("KillSwitch: failed to stop telegram: %s", exc)
 
         # 6. Downgrade consent level
-        self.consent.set_level("assist")
+        self.consent.set_level("none")
 
         dt_ms = (time.perf_counter() - t0) * 1000.0
         log.warning("EMERGENCY KILL SWITCH: All autonomous systems halted in %.2fms (%d kernel tasks cancelled). Reason: %s",
@@ -82,7 +82,7 @@ class KillSwitch:
         res = {
             "ok": True,
             "status": "halted",
-            "consent_level": "assist",
+            "consent_level": "none",
             "kernel_tasks_cancelled": tasks_cancelled,
             "latency_ms": round(dt_ms, 2),
             "reason": reason,

@@ -203,9 +203,13 @@ def open_app(target: str) -> dict:
 @tool("close_app", "Close app windows whose title contains the target.",
       {"target": {"type": "string"}}, permission="execute")
 def close_app(target: str) -> dict:
+    import re as _re
+    if not _re.fullmatch(r'[\w\s.\-]+', target):
+        return {"ok": False, "speech": f"Invalid app target: '{target}'.", "data": {}}
+    safe_target = target.replace("'", "''")
     n = _run_ps(
         "(Get-Process | Where-Object {$_.MainWindowTitle -ne ''} | "
-        f"Where-Object {{ $_.MainWindowTitle -like '*{target}*' }} | "
+        f"Where-Object {{ $_.MainWindowTitle -like '*{safe_target}*' }} | "
         "ForEach-Object { $_.CloseMainWindow() } | Measure-Object).Count"
     )
     count = int(n or 0)
@@ -218,8 +222,16 @@ def close_app(target: str) -> dict:
       {"command": {"type": "string"}, "timeout": {"type": "integer"}}, permission="execute")
 def shell_run(command: str, timeout: int = 20) -> dict:
     cmd_low = (command or "").lower()
-    destructive = ("format ", "rmdir /s /q c:", "del /f /s /q c:", "shutdown -s", "restart-computer")
-    if any(d in cmd_low for d in destructive):
+    blocked = (
+        "format ", "format.", "rmdir /s", "del /f /s", "del /s",
+        "shutdown", "restart-computer", "stop-computer",
+        "rm -rf", "rm -r /", "remove-item -recurse",
+        "net user", "net localgroup",
+        "reg delete", "reg add",
+        "bcdedit", "diskpart",
+        "taskkill /f /im lsass", "taskkill /f /im csrss",
+    )
+    if any(d in cmd_low for d in blocked):
         return {"ok": False, "speech": "Command blocked: destructive system command detected.", "data": {}}
     out = _run_ps(command, timeout=max(5, min(int(timeout), 120)))
     return {"ok": True, "speech": out[:300] or "(no output)", "data": {"output": out[:4000]}}
@@ -301,8 +313,12 @@ def clipboard_set(text: str = "") -> dict:
         return {"ok": True, "speech": f"Copied {len(text)} characters.", "data": {"length": len(text)}}
     except ImportError:
         try:
-            escaped = text.replace("'", "''")
-            _run_ps(f"Set-Clipboard -Value '{escaped}'")
+            import subprocess
+            proc = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", "$input | Set-Clipboard"],
+                input=text, capture_output=True, text=True, timeout=5,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+            )
             _push_clip(text)
             return {"ok": True, "speech": f"Copied {len(text)} characters.", "data": {"length": len(text)}}
         except Exception as exc:

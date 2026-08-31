@@ -93,7 +93,11 @@ class Bus:
         for sub in subs:
             for cb in sub.callbacks:
                 try:
+                    t0 = _time()
                     cb(ev)
+                    elapsed = _time() - t0
+                    if elapsed > 2.0:
+                        log.warning("Slow bus callback %s on %s took %.1fs", cb, topic, elapsed)
                 except Exception as exc:
                     log.warning("Bus subscriber %s failed on topic %s: %s", cb, topic, exc)
             q = sub.queue

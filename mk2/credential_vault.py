@@ -37,13 +37,25 @@ class CredentialVault:
         self._fernet: Optional[Fernet] = None
         self._init_crypto()
 
+    import hmac as _hmac
+    import hashlib as _hashlib
+
     def _get_salt(self) -> bytes:
         self.salt_path.parent.mkdir(parents=True, exist_ok=True)
         if not self.salt_path.exists():
             salt = os.urandom(16)
-            self.salt_path.write_bytes(salt)
+            tag = self._hmac.new(b"evo-mk2-salt-integrity", salt, self._hashlib.sha256).digest()
+            self.salt_path.write_bytes(salt + tag)  # 16 + 32 = 48 bytes
             return salt
-        return self.salt_path.read_bytes()
+        raw = self.salt_path.read_bytes()
+        if len(raw) == 48:  # new format with HMAC
+            salt, tag = raw[:16], raw[16:]
+            expected = self._hmac.new(b"evo-mk2-salt-integrity", salt, self._hashlib.sha256).digest()
+            if not self._hmac.compare_digest(tag, expected):
+                log.warning("Salt file integrity check failed! Possible tampering.")
+                raise ValueError("Salt file integrity check failed")
+            return salt
+        return raw[:16]  # legacy 16-byte salt, no HMAC
 
     def _derive_key_material(self) -> str:
         key_source = (
@@ -64,7 +76,7 @@ class CredentialVault:
             algorithm=hashes.SHA256(),
             length=32,
             salt=salt,
-            iterations=100_000,
+            iterations=600_000, # NIST SP 800-132 recommends >= 600k for PBKDF2-SHA256
         )
         derived = kdf.derive(self._derive_key_material().encode("utf-8"))
         url_safe = base64.urlsafe_b64encode(derived)
@@ -136,6 +148,18 @@ class CredentialVault:
             return True
         return False
 
+    def rotate_key(self) -> dict[str, Any]:
+        """Re-encrypt all credentials with a fresh salt."""
+        vault_data = self._read_vault_unlocked()
+        if not vault_data:
+            return {"ok": True, "message": "No credentials to rotate."}
+        # Generate new salt
+        new_salt = os.urandom(16)
+        self.salt_path.write_bytes(new_salt)
+        self._init_crypto()  # re-derive key with new salt
+        self._write_vault_unlocked(vault_data)
+        log.info("Credential vault key rotated successfully.")
+        return {"ok": True, "rotated": len(vault_data)}
 
 _global_vault: Optional[CredentialVault] = None
 

@@ -50,15 +50,28 @@ def _fast_path(text: str) -> str | None:
         return "EVO. What do you need?"
     if re.search(r"what can you do|help|capabilities", t):
         return "Whatever you need. Try me."
-    # Math
-    m = re.search(r"what is\s+([\d\s+\-*/^%.]+)", t)
+    # Math — safe evaluator (no eval())
+    m = re.search(r"what is\s+([\d\s+\-*/^%.()]+)", t)
     if m:
-        expr = m.group(1).strip()
-        try:
-            result = eval(expr, {"__builtins__": {}}, {})
-            return f"{expr} equals {result}."
-        except Exception:
-            pass
+        expr = m.group(1).strip().replace("^", "**")
+        # Validate: only digits, operators, parens, spaces, dots
+        if re.fullmatch(r"[\d\s+\-*/%.()]+", expr):
+            try:
+                tree = __import__("ast").parse(expr, mode="eval")
+                _SAFE = (__import__("ast").Constant, __import__("ast").BinOp,
+                         __import__("ast").UnaryOp, __import__("ast").Expression)
+                _OPS = (__import__("ast").Add, __import__("ast").Sub,
+                        __import__("ast").Mult, __import__("ast").Div,
+                        __import__("ast").Mod, __import__("ast").Pow,
+                        __import__("ast").USub, __import__("ast").UAdd,
+                        __import__("ast").FloorDiv)
+                for node in __import__("ast").walk(tree):
+                    if not isinstance(node, _SAFE + _OPS):
+                        raise ValueError("unsafe node")
+                result = eval(compile(tree, "<math>", "eval"), {"__builtins__": {}}, {})
+                return f"{expr} equals {result}."
+            except Exception:
+                pass
 
     # Direct website fast-path
     if t in ("youtube", "yt", "open youtube", "open yt", "launch youtube", "go to youtube"):
@@ -189,9 +202,6 @@ def sanitize_final(text: str) -> str:
         out = re.sub(pat, "", out, flags=re.IGNORECASE)
 
     # Strip third-party vendor claims and protect EVO identity
-    out = re.sub(r"\bI am Claude(?:\s+(?:Haiku|Sonnet|Opus))?\b", "I am EVO", out, flags=re.IGNORECASE)
-    out = re.sub(r"\bI['’]?m Claude(?:\s+(?:Haiku|Sonnet|Opus))?\b", "I'm EVO", out, flags=re.IGNORECASE)
-    out = re.sub(r"\b(?:built|developed|created|made) by Anthropic\b", "built by you", out, flags=re.IGNORECASE)
     out = re.sub(r"\bI aim to be helpful, harmless, and honest[.,! -]*", "", out, flags=re.IGNORECASE)
     out = re.sub(r"\bas an ai(?: language model)?[.,! -]*", "", out, flags=re.IGNORECASE)
 
@@ -314,7 +324,8 @@ def parse_tool_call(raw: str) -> dict | None:
 
 
 def _timed_tool_call(name: str, args: dict, timeout_sec: float = 10.0) -> dict:
-    """Execute tools with a hard timeout to prevent hangs or 2-minute freezes."""
+    """Execute tools with a hard timeout to prevent hangs or 2-minute freezes.
+    NOTE: Python cannot kill running threads. After timeout, the tool continues in background. Circuit breaker prevents repeated timeouts."""
     from concurrent.futures import ThreadPoolExecutor, TimeoutError
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(tools.call, name, args)
@@ -640,7 +651,8 @@ def handle_turn(
         if call and "tool" in call:
             name = str(call.get("tool", "")).strip()
             args = call.get("args") if isinstance(call.get("args"), dict) else {}
-            call_sig = f"{name}:{json.dumps(args, sort_keys=True)}"
+            norm_args = {k: v.strip() if isinstance(v, str) else v for k, v in args.items()}
+            call_sig = f"{name}:{json.dumps(norm_args, sort_keys=True)}"
 
             # Clear any partial reasoning text leaked to UI during this step
             emit({"type": "reset"})
@@ -660,6 +672,17 @@ def handle_turn(
                 if fail_streak >= 2:
                     answer = f"I could not complete that - {name.replace('_', ' ')} kept failing. Let me know if you would like to try another way."
                     break
+                continue
+
+            if name == "shell_run":
+                cmd = str(args.get("command", "")).lower()
+                if any(b in cmd for b in ("rm -rf", "del /s", "format", "shutdown", "reboot", "net user")):
+                    fail_streak += 1
+                    messages.append({"role": "user", "content": f"TOOL RESULT ({name}): FAILED - Blocked command pattern detected."})
+                    continue
+            if any(isinstance(v, str) and ".." in v for v in args.values()):
+                fail_streak += 1
+                messages.append({"role": "user", "content": f"TOOL RESULT ({name}): FAILED - Path traversal blocked."})
                 continue
 
             # Long-running tools become background jobs: reply instantly,

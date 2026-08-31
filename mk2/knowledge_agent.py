@@ -167,13 +167,14 @@ class KnowledgeAgent:
 
     def knowledge_graph(self, topic: str) -> dict[str, Any]:
         """Map connections across all data sources around a central topic."""
-        hits = self.search(topic, limit=5)
-        nodes = [{"id": topic, "type": "root", "label": topic}]
+        topic_key = topic.strip().lower()
+        hits = self.search(topic_key, limit=5)
+        nodes = [{"id": topic_key, "type": "root", "label": topic}]
         edges = []
         for h in hits:
             nid = h.get("title", "node")
             nodes.append({"id": nid, "type": h.get("source"), "label": nid})
-            edges.append({"source": topic, "target": nid, "weight": h.get("score", 0.5)})
+            edges.append({"source": topic_key, "target": nid, "weight": h.get("score", 0.5)})
         return {"topic": topic, "nodes": nodes, "edges": edges}
 
     def proactive_surface(self, context_text: str) -> list[dict[str, Any]]:

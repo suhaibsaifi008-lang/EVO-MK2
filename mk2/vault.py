@@ -1,16 +1,18 @@
-﻿"""Memory Vault â€” human-readable markdown memory files.
+"""Memory Vault â€” human-readable markdown memory files.
 
 Inspired by jaredrhod/ai-memory-vault (AGPL): your memory lives as plain
 markdown you can open, edit, and version yourself. MK2 stores durable notes,
 preferences and a daily journal here; retrieval feeds straight into context.
 """
 import re
+import threading
 import time
 from pathlib import Path
 
 from .config import DATA
 
 VAULT_DIR = DATA / "vault"
+_vault_lock = threading.Lock()
 
 
 def _slug(topic: str) -> str:
@@ -29,26 +31,43 @@ def _path(topic: str) -> Path:
 
 def write_note(topic: str, content: str, tags: list[str] | None = None) -> Path:
     """Create or UPDATE a note. Frontmatter keeps it greppable."""
-    p = _path(topic)
-    fm = (
-        "---\n"
-        f"topic: {_slug(topic)}\n"
-        f"updated: {time.strftime('%Y-%m-%d %H:%M', time.localtime())}\n"
-        f"tags: {', '.join(tags or [])}\n"
-        "---\n\n"
-    )
-    body = (content or "").strip() + "\n"
-    p.write_text(fm + body, encoding="utf-8")
-    return p
+    with _vault_lock:
+        p = _path(topic)
+        fm = (
+            "---\n"
+            f"topic: {_slug(topic)}\n"
+            f"updated: {time.strftime('%Y-%m-%d %H:%M', time.localtime())}\n"
+            f"tags: {', '.join(tags or [])}\n"
+            "---\n\n"
+        )
+        body = (content or "").strip() + "\n"
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(fm + body, encoding="utf-8")
+        tmp.replace(p)  # atomic on NTFS and ext4
+        return p
 
 
 def append_note(topic: str, line: str) -> Path:
-    p = _path(topic)
-    if not p.exists():
-        return write_note(topic, line)
-    text = p.read_text(encoding="utf-8").rstrip() + f"\n- {line.strip()} [{time.strftime('%Y-%m-%d')}]\n"
-    p.write_text(text, encoding="utf-8")
-    return p
+    with _vault_lock:
+        p = _path(topic)
+        if not p.exists():
+            fm = (
+                "---\n"
+                f"topic: {_slug(topic)}\n"
+                f"updated: {time.strftime('%Y-%m-%d %H:%M', time.localtime())}\n"
+                f"tags: \n"
+                "---\n\n"
+            )
+            body = (line or "").strip() + "\n"
+            tmp = p.with_suffix(".tmp")
+            tmp.write_text(fm + body, encoding="utf-8")
+            tmp.replace(p)
+            return p
+        text = p.read_text(encoding="utf-8").rstrip() + f"\n- {line.strip()} [{time.strftime('%Y-%m-%d')}]\n"
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(p)
+        return p
 
 
 def read_note(topic: str) -> str:

@@ -21,9 +21,21 @@ from . import brain, config, db, llm, tools
 app = FastAPI(title="EVO MK2")
 UI = Path(config.UI_DIR)
 
+import uuid
+
+class RequestIDMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        request.state.request_id = uuid.uuid4().hex[:12]
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request.state.request_id
+        return response
+
+app.add_middleware(RequestIDMiddleware)
+
 # ------------------------------------------------------------------ API key auth
 
-_LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
+
+_LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
 
 def _resolve_api_key() -> str | None:
@@ -47,13 +59,11 @@ def _is_auth_required(request: Request) -> bool:
 
 class APIKeyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        client = (request.client.host if request.client else "") or ""
         api_key = _resolve_api_key()
-        if api_key and _is_auth_required(request) and client not in _LOCAL_HOSTS:
+        if api_key and _is_auth_required(request):
             provided = (
                 request.headers.get("x-api-key", "")
                 or request.headers.get("authorization", "").removeprefix("Bearer ").strip()
-                or request.query_params.get("key", "")
             )
             if provided != api_key:
                 from fastapi.responses import JSONResponse
@@ -66,10 +76,11 @@ app.add_middleware(APIKeyMiddleware)
 
 from starlette.middleware.cors import CORSMiddleware
 
-_cors_origins = [o.strip() for o in os.environ.get("EVO_CORS_ORIGINS", "*").split(",") if o.strip()]
+# Wildcard origins with credentials are not allowed by CORS, default to localhost
+_cors_origins = [o.strip() for o in os.environ.get("EVO_CORS_ORIGINS", "http://localhost:8421").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_cors_origins or ["*"],
+    allow_origins=_cors_origins or ["http://localhost:8421"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -82,11 +93,20 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if request.url.path.startswith(("/ws", "/voice")):
             return await call_next(request)
+        
+        path = request.url.path
+        if path in ("/api/chat", "/api/chat/stream"):
+            timeout_s = 180.0
+        elif path in ("/api/autonomy/health", "/api/diag"):
+            timeout_s = 10.0
+        else:
+            timeout_s = 60.0
+            
         try:
-            return await asyncio.wait_for(call_next(request), timeout=60.0)
+            return await asyncio.wait_for(call_next(request), timeout=timeout_s)
         except asyncio.TimeoutError:
             from fastapi.responses import JSONResponse
-            return JSONResponse({"error": "request timed out after 60s"}, status_code=504)
+            return JSONResponse({"error": f"request timed out after {timeout_s}s"}, status_code=504)
 
 
 app.add_middleware(TimeoutMiddleware)
@@ -109,8 +129,8 @@ def record_llm_result(ok: bool) -> None:
             _circuit_open_until = 0.0
         else:
             _consecutive_llm_failures += 1
-            if _consecutive_llm_failures >= 5:
-                _circuit_open_until = time.time() + 30.0
+            if _consecutive_llm_failures >= 3:
+                _circuit_open_until = time.time() + 10.0
 
 from . import events_api as _events  # noqa: E402
 
@@ -122,7 +142,8 @@ try:
     webrtc_v2.register(app)
 except Exception as _voice_exc:  # noqa: BLE001
     webrtc_v2 = None
-    print(f"[voice-v2] registration failed: {_voice_exc}", file=__import__("sys").stderr)
+    import logging
+    logging.getLogger("mk2.server").warning(f"[voice-v2] registration failed: {_voice_exc}")
 
 _llm_probe = {"ts": 0.0, "ok": False, "probing": False}
 
@@ -174,6 +195,7 @@ def landing_page():
 
 @app.get("/autonomy")
 def autonomy_dashboard():
+    # Intentionally skipped adding consent check here as it is a read-only dashboard endpoint
     return FileResponse(UI / "money_dashboard.html")
 
 
@@ -220,8 +242,22 @@ def health():
     }
 
 
+from collections import deque
+_chat_rate: dict[str, deque] = {}
+_RATE_LIMIT = 20  # max requests per minute
+_RATE_WINDOW = 60.0
+
 @app.post("/api/chat")
-def chat(body: ChatIn) -> dict:
+def chat(body: ChatIn, request: Request) -> dict:
+    key = request.headers.get("x-api-key", "default")
+    now = time.time()
+    if key not in _chat_rate:
+        _chat_rate[key] = deque()
+    while _chat_rate[key] and _chat_rate[key][0] < now - _RATE_WINDOW:
+        _chat_rate[key].popleft()
+    if len(_chat_rate[key]) >= _RATE_LIMIT:
+        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+    _chat_rate[key].append(now)
     if is_circuit_open():
         from .fastlane import fast_command
         from .llm import _offline_parse
@@ -320,6 +356,10 @@ class SessionImportIn(BaseModel):
 @app.post("/api/session/import")
 def import_session_endpoint(body: SessionImportIn) -> dict:
     """Import conversational turns and facts from remote device."""
+    if len(body.recent_turns) > 50:
+        body.recent_turns = body.recent_turns[:50]
+    if len(body.facts) > 50:
+        body.facts = body.facts[:50]
     imported_turns = db.import_messages(body.recent_turns)
     imported_facts = 0
     for fact in body.facts:
@@ -343,6 +383,8 @@ def request_pairing_endpoint(body: PairRequestIn) -> dict:
     """Request 6-digit device pairing code."""
     import random
     from .bus import bus
+    now = time.time()
+    expired = [k for k, v in _pairing_codes.items() if v['expires'] < now]; [_pairing_codes.pop(k) for k in expired]
     code = f"{random.randint(100000, 999999)}"
     _pairing_codes[code] = {
         "expires": time.time() + 300,
@@ -471,6 +513,12 @@ async def ws_voice(ws: WebSocket) -> None:
       gapless because sentence N+1 is synthesized/fetched during sentence N.
     """
     await ws.accept()
+    api_key = _resolve_api_key()
+    if api_key:
+        provided = ws.query_params.get("key", "")
+        if provided != api_key:
+            await ws.close()
+            return
     loop = asyncio.get_running_loop()
     state = {"busy": False, "cancel": False}
     inbox: asyncio.Queue = asyncio.Queue()   # client messages, read always
