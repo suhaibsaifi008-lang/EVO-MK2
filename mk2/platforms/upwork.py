@@ -282,6 +282,94 @@ class UpworkAgent:
         self.last_proposal_ts = now
         self.known_clients.add(client_id)
         self.consent.record_outcome("proposal_submit", True, f"Submitted to {client_id} (${bid})")
-        self.audit.log_action(action_payload, v, {"ok": True, "bid": bid, "status": "submitted"})
 
+        # Live browser automation if URL is present
+        gig_url = gig.get("url")
+        if gig_url and self.browser.browser:
+            try:
+                self.browser.navigate(gig_url)
+                time.sleep(2)
+                if self.browser.page:
+                    # Fill proposal text area if present
+                    self.browser.page.evaluate(f"""
+                    (note) => {{
+                        const textarea = document.querySelector('textarea[aria-labelledby*="cover_letter"], textarea.air3-textarea, textarea');
+                        if (textarea) {{
+                            textarea.value = note;
+                            textarea.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                        }}
+                    }}
+                    """, cover_note)
+            except Exception as exc:
+                log.warning("Browser proposal form automation note: %s", exc)
+
+        self.audit.log_action(action_payload, v, {"ok": True, "bid": bid, "status": "submitted"})
         return MoralVerdict.safe(f"Proposal submitted for '{gig.get('title')}' at ${bid:.2f}", action=action_payload)
+
+    def check_proposal_status(self) -> list[dict[str, Any]]:
+        """Check status of active and submitted proposals on Upwork."""
+        if not self.consent.has_consent("browser_navigate"):
+            return []
+        try:
+            self.browser.navigate("https://www.upwork.com/ab/proposals/")
+            time.sleep(2)
+            proposals = []
+            if self.browser.page:
+                extracted = self.browser.page.evaluate("""
+                () => {
+                    const rows = document.querySelectorAll('tr, .proposal-item, [data-test="proposal-row"]');
+                    const out = [];
+                    rows.forEach(r => {
+                        const titleEl = r.querySelector('a, h4, .job-title');
+                        const statusEl = r.querySelector('.badge, [data-test="status"], .status-text');
+                        if (titleEl) {
+                            out.push({
+                                title: titleEl.innerText.trim(),
+                                status: statusEl ? statusEl.innerText.trim().toLowerCase() : 'pending',
+                            });
+                        }
+                    });
+                    return out;
+                }
+                """)
+                if isinstance(extracted, list):
+                    proposals = extracted
+            return proposals
+        except Exception as exc:
+            log.warning("Upwork proposal status check failed: %s", exc)
+            return []
+
+    def check_messages(self) -> list[dict[str, Any]]:
+        """Check for client replies in Upwork messaging center."""
+        if not self.consent.has_consent("browser_navigate"):
+            return []
+        try:
+            self.browser.navigate("https://www.upwork.com/ab/messages/")
+            time.sleep(2)
+            messages = []
+            if self.browser.page:
+                extracted = self.browser.page.evaluate("""
+                () => {
+                    const rooms = document.querySelectorAll('.room-list-item, .chat-item, [data-test="room-item"]');
+                    const out = [];
+                    rooms.forEach(rm => {
+                        const sender = rm.querySelector('.name, .room-title, strong');
+                        const snippet = rm.querySelector('.snippet, .last-message, p');
+                        const unread = rm.querySelector('.unread-badge, .is-unread') !== null;
+                        if (sender) {
+                            out.push({
+                                client: sender.innerText.trim(),
+                                snippet: snippet ? snippet.innerText.trim() : '',
+                                unread: unread,
+                            });
+                        }
+                    });
+                    return out;
+                }
+                """)
+                if isinstance(extracted, list):
+                    messages = extracted
+            return messages
+        except Exception as exc:
+            log.warning("Upwork messages check failed: %s", exc)
+            return []

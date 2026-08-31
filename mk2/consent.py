@@ -41,6 +41,24 @@ ACTIONS_BY_LEVEL = {
 }
 
 
+_RISK_TIERS = {
+    "safe": {
+        "create_note", "fs_write", "web_search", "deep_research", "system_info",
+        "screenshot", "note_create", "docs_create", "translate", "mail_send",
+    },
+    "medium": {
+        "browser_navigate", "browser_click", "browser_type", "calendar_create",
+        "browser_screenshot", "timer_set", "todo_add", "reminder_set",
+    },
+    "high": {
+        "shell_run", "type_text", "press_key", "mouse_click", "browser_act",
+    },
+    "critical": {
+        "fs_delete", "vault_delete", "payment_send", "proposal_submit", "stripe_invoice",
+    },
+}
+
+
 class ConsentManager:
     """Manages user consent levels, precedents, and trust scoring."""
 
@@ -115,11 +133,20 @@ class ConsentManager:
         return cur_idx >= req_idx
 
     def is_auto_approved(self, action_type: str) -> bool:
-        """Check if an action type has earned 3 consecutive successful precedents."""
+        """Check if an action type has earned sufficient consecutive successful precedents."""
         act = action_type.strip().lower()
         prec = self.action_precedents.get(act, {})
-        consecutive_success = prec.get("consecutive_success", 0)
-        return consecutive_success >= 3
+        streak = prec.get("consecutive_success", 0)
+
+        # High and critical risk actions NEVER auto-approve
+        if act in _RISK_TIERS["critical"] or act in _RISK_TIERS["high"]:
+            return False
+
+        if act in _RISK_TIERS["medium"]:
+            return streak >= 5
+
+        # Safe actions or default standard actions (3 precedents)
+        return streak >= 3
 
     def record_outcome(self, action_type: str, success: bool, details: str = "") -> None:
         """Record outcome of an action to build or decrement trust."""

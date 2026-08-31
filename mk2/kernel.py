@@ -10,6 +10,11 @@ from .bus import bus
 
 log = logging.getLogger("mk2.kernel")
 
+
+def _log_event(subsystem: str, event: str, **kwargs):
+    log.info("[%s] %s %s", subsystem, event, " ".join(f"{k}={v}" for k, v in kwargs.items()))
+
+
 _tasks: dict[str, asyncio.Task] = {}
 _global_kernel_tasks: dict[str, asyncio.Task] = {}
 _restarts: dict[str, int] = {}
@@ -27,26 +32,26 @@ def _supervise(name: str, factory) -> asyncio.Task:
         wd = _watchdog.get_watchdog()
         if wd:
             return wd.register(name, factory)
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("Watchdog registration fallback for %s: %s", name, exc)
 
     async def runner() -> None:
         while True:
             try:
+                _log_event("kernel", "subsystem_start", name=name)
                 await factory()
             except asyncio.CancelledError:
+                _log_event("kernel", "subsystem_cancelled", name=name)
                 return
             except Exception as exc:  # noqa: BLE001
                 _restarts[name] = _restarts.get(name, 0) + 1
                 count = _restarts[name]
-                log.warning("subsystem %s died (%s) - restart #%d",
-                            name, exc, count)
+                log.warning("subsystem %s died (%s) - restart #%d", name, exc, count)
                 try:
                     from . import errlog
-
                     errlog.log_error(f"subsystem:{name}", str(exc))
-                except Exception:
-                    pass
+                except Exception as e_err:
+                    log.warning("Errlog write failed for %s: %s", name, e_err)
                 if count >= 5:
                     log.error(
                         "subsystem %s crashed %d times -- entering graceful degradation",
@@ -54,13 +59,12 @@ def _supervise(name: str, factory) -> asyncio.Task:
                     )
                     try:
                         from . import errlog
-
                         errlog.log_error(
                             f"subsystem:{name}:degraded",
                             f"graceful degradation active after {count} crashes",
                         )
-                    except Exception:
-                        pass
+                    except Exception as deg_err:
+                        log.warning("Errlog degraded note failed for %s: %s", name, deg_err)
                     bus.publish("system.degraded", {
                         "subsystem": name,
                         "crashes": count,
@@ -78,7 +82,6 @@ def _supervise(name: str, factory) -> asyncio.Task:
 
 async def _server_subsystem() -> None:
     import uvicorn
-
     from .config import settings
     from .server import app
 
@@ -108,7 +111,7 @@ def main(voice: bool = True) -> None:
     n_skills = skills.load_all()
     if n_skills:
         log.info("re-armed %d learned skill(s)", n_skills)
-    try:  # pre-load the local Piper JARVIS voice and warm voice model
+    try:
         from .voice import tts as _tts
         _tts.warm_piper()
         if os.environ.get("EVO_VOICE", "1") == "1":
@@ -117,12 +120,13 @@ def main(voice: bool = True) -> None:
             def _warm():
                 try:
                     llm.chat([{"role": "user", "content": "ping"}], role="voice", timeout=5, max_providers=1)
-                except Exception:
-                    pass
+                except Exception as warm_err:
+                    log.debug("Voice model warm note: %s", warm_err)
 
             threading.Thread(target=_warm, daemon=True, name="warm-voice-model").start()
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("Piper initialization note: %s", exc)
+
     _loop = asyncio.new_event_loop()
     asyncio.set_event_loop(_loop)
     bus.attach_loop(_loop)
@@ -155,17 +159,16 @@ def main(voice: bool = True) -> None:
     _supervise("server", _server_subsystem)
 
     async def _voice_v2_bootline() -> None:
-        await asyncio.sleep(4)      # let the server app finish registering
+        await asyncio.sleep(4)
         try:
             from .voice import webrtc_v2
-
             log.info(webrtc_v2.boot_line())
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("Voice v2 boot line note: %s", exc)
 
     _supervise("voicev2log", _voice_v2_bootline)
 
-    # Phase 2: communication surfaces -------------------------------------
+    # Communication surfaces
     tg_stop = None
     from .config import settings
 
@@ -183,84 +186,79 @@ def main(voice: bool = True) -> None:
 
     if os.environ.get("EVO_PUSH", "1") == "1":
         from . import push_notify
-
         push_notify.start_bridge()
 
     try:
         from . import notifications
         notifications.start_notification_bridge()
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("Notification bridge note: %s", exc)
 
     async def _reminder_tick() -> None:
         from . import reminders
-
         while True:
-            reminders.tick(bus.publish)
+            try:
+                reminders.tick(bus.publish)
+            except Exception as exc:
+                log.warning("Reminder tick error: %s", exc)
             await asyncio.sleep(2)
 
     _supervise("reminders", _reminder_tick)
 
     async def _job_tick() -> None:
         from . import jobs
-
         while True:
             try:
                 jobs.promote_queued()
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning("Job queue promote error: %s", exc)
             await asyncio.sleep(5)
 
     _supervise("jobtick", _job_tick)
 
-    # Phase 5: scheduled workflows + habit proposals ----------------------
+    # Scheduled workflows & habits
     async def _workflow_tick() -> None:
         from . import workflows
-
         while True:
             try:
                 due = workflows.due_now()
                 for name in due:
                     def _run_wf(n=name):
-                        r = workflows.run(
-                            n, publish_progress=lambda m: None)
+                        r = workflows.run(n, publish_progress=lambda m: None)
                         bus.publish("notify.out", {
                             "kind": "workflow",
                             "text": (f"Scheduled workflow '{n}' "
-                                     + ("finished." if r.get("ok")
-                                        else "had failures."))})
+                                     + ("finished." if r.get("ok") else "had failures."))
+                        })
                         workflows.mark_ran(n)
                     await asyncio.to_thread(_run_wf)
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning("Workflow execution tick error: %s", exc)
             await asyncio.sleep(30)
 
     _supervise("workflowtick", _workflow_tick)
 
     async def _habit_tick() -> None:
         from . import habits
-
         while True:
             try:
                 found = await asyncio.to_thread(habits.scan)
                 for p in found:
                     bus.publish("notify.out", {
                         "kind": "suggestion",
-                        "text": p["detail"] +
-                                f" Say 'approve {p['id']}' to automate it."})
-            except Exception:
-                pass
+                        "text": p["detail"] + f" Say 'approve {p['id']}' to automate it."
+                    })
+            except Exception as exc:
+                log.warning("Habit scan tick error: %s", exc)
             await asyncio.sleep(600)
 
     _supervise("habittick", _habit_tick)
 
-    # Phase 5.5: EVO watches its own health ------------------------------
     if os.environ.get("EVO_SELFCHECK", "1") == "1":
         minutes = max(30, int(os.environ.get("EVO_SELFCHECK_MINUTES", "180")))
 
         async def _selfcheck_tick() -> None:
             from . import selfcheck
-
             while True:
                 try:
                     report = await asyncio.to_thread(selfcheck.tick)
@@ -268,58 +266,49 @@ def main(voice: bool = True) -> None:
                         bus.publish("notify.out", {
                             "kind": "selfcheck",
                             "text": f"Self-check: {issue['detail'][:180]}"
-                                    + (" - dev task staged a fix, awaiting "
-                                       "your apply." if not os.environ.get(
-                                           "EVO_SELF_HEAL_AUTOAPPLY", "") == "1"
-                                       else " - auto-healing with revert net.")})
-                except Exception:
-                    pass
+                                    + (" - dev task staged a fix, awaiting your apply."
+                                       if not os.environ.get("EVO_SELF_HEAL_AUTOAPPLY", "") == "1"
+                                       else " - auto-healing with revert net.")
+                        })
+                except Exception as exc:
+                    log.warning("Self-check execution error: %s", exc)
+                    bus.publish("notify.out", {"kind": "selfcheck", "text": f"Self-check error: {exc}"})
                 await asyncio.sleep(minutes * 60)
 
         _supervise("selfchecktick", _selfcheck_tick)
 
-    # Phase 7: initiative engine ------------------------------------------
     if os.environ.get("EVO_INITIATIVE", "1") == "1":
-
         async def _initiative_tick() -> None:
             from . import initiative_engine
-
             while True:
                 try:
-                    await asyncio.to_thread(initiative_engine.maybe_initiate,
-                                            bus.publish)
-                except Exception:
-                    pass
+                    await asyncio.to_thread(initiative_engine.maybe_initiate, bus.publish)
+                except Exception as exc:
+                    log.warning("Initiative engine execution error: %s", exc)
                 await asyncio.sleep(30 * 60)
 
         _supervise("initiativetick", _initiative_tick)
 
-    # Phase 7.6: knowledge watcher ----------------------------------------
     if os.environ.get("EVO_KNOWLEDGE_WATCH", "1") == "1":
-
         async def _knowledge_tick() -> None:
             from . import rag
-
             while True:
                 try:
                     await asyncio.to_thread(rag.watch_scan)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log.warning("Knowledge watch scan error: %s", exc)
                 await asyncio.sleep(600)
 
         _supervise("knowledgetick", _knowledge_tick)
 
-    # Phase 4: periodic conversation compression -> semantic episodes
     if os.environ.get("EVO_MEMORY_TICK", "1") == "1":
-
         async def _memory_tick() -> None:
             from . import memory
-
             while True:
                 try:
                     await asyncio.to_thread(memory.summarize_and_archive)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log.warning("Memory summarize and archive error: %s", exc)
                 await asyncio.sleep(600)
 
         _supervise("memorytick", _memory_tick)
@@ -332,8 +321,8 @@ def main(voice: bool = True) -> None:
                 alerts = _run_awareness(bus.publish)
                 for alert in alerts:
                     bus.publish("notify.out", {"kind": "watcher", "text": alert})
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning("Awareness loop check error: %s", exc)
             await asyncio.sleep(120)
 
     if os.environ.get("EVO_AWARENESS", "1") == "1":
@@ -343,8 +332,8 @@ def main(voice: bool = True) -> None:
         try:
             from . import perception
             perception.start_perception_loop(interval=5.0)
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("Perception loop startup error: %s", exc)
 
     async def _autonomy_subsystem() -> None:
         from . import autonomy
@@ -368,9 +357,6 @@ def main(voice: bool = True) -> None:
     else:
         log.info("wake-word idle (EVO_WAKE=0). Push-to-talk + /api/tts remain active.")
 
-    # Keep the local model resident: otherwise Ollama unloads after ~5 min
-    # idle and EVERY reply pays a 15s+ reload tax. Also keeps FreeLLMAPI
-    # routes' measured-TTFT cache fresh so voice never rides a cold route.
     if os.environ.get("EVO_MODEL_WARMER", "1") == "1":
         warmer_state = {"n": 0}
 
@@ -382,8 +368,8 @@ def main(voice: bool = True) -> None:
                              role=role, temperature=0, timeout=10,
                              bias=False, max_providers=1)
                     warmer_state["n"] += 1
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log.debug("Model warmer ping note: %s", exc)
                 await asyncio.sleep(150)
 
         _supervise("model-warmer", _warmer)
@@ -403,10 +389,10 @@ def main(voice: bool = True) -> None:
                     if free_gb < 1.0:
                         log.warning("Low disk space: %.2f GB remaining", free_gb)
                         bus.publish("system.alert", {"type": "disk_space", "free_gb": free_gb})
-                except Exception:
-                    pass
-            except Exception:
-                pass
+                except Exception as d_exc:
+                    log.warning("Disk check error: %s", d_exc)
+            except Exception as r_exc:
+                log.warning("Resource monitor error: %s", r_exc)
             await asyncio.sleep(60)
 
     _supervise("resourcemonitor", _resource_monitor)
@@ -414,17 +400,16 @@ def main(voice: bool = True) -> None:
     log.info("EVO MK2 kernel online: http://%s:%d", settings.host, settings.port)
     try:
         from .voice import webrtc_v2
-
         log.info(webrtc_v2.boot_line())
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("Voice v2 boot line note: %s", exc)
 
     if "--tray" in sys.argv or (os.environ.get("EVO_TRAY", "1") == "1" and "--service" not in sys.argv):
         try:
             from . import tray_icon
             tray_icon.launch_tray_in_background(on_exit=lambda: _loop.call_soon_threadsafe(_loop.stop))
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("Tray icon startup note: %s", exc)
     try:
         _loop.run_forever()
     except KeyboardInterrupt:

@@ -8,6 +8,12 @@ import time
 import uuid
 
 log = logging.getLogger("mk2.brain")
+
+
+def _log_event(subsystem: str, event: str, **kwargs):
+    log.info("[%s] %s %s", subsystem, event, " ".join(f"{k}={v}" for k, v in kwargs.items()))
+
+
 from datetime import datetime
 from typing import Callable
 

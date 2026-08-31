@@ -216,8 +216,8 @@ def timer_set(duration="5 minutes", label="Timer"):
 				if t and not t["fired"]:
 					t["fired"] = True
 					try:
-						from ..bus import publish_threadsafe
-						publish_threadsafe("notify.out", {"kind": "timer", "text": f"Timer: {label}"})
+						from ..bus import bus
+						bus.publish("notify.out", {"kind": "timer", "text": f"Timer: {label}"})
 					except Exception:
 						pass
 

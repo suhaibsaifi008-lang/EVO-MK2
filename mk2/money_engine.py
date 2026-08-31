@@ -24,6 +24,24 @@ from .revenue import get_revenue_tracker
 log = logging.getLogger("mk2.money_engine")
 
 
+def _log_event(subsystem: str, event: str, **kwargs):
+    log.info("[%s] %s %s", subsystem, event, " ".join(f"{k}={v}" for k, v in kwargs.items()))
+
+
+
+class FunnelTracker:
+    """Tracks stages: proposal_sent -> client_viewed -> client_responded -> hired -> delivered -> paid."""
+
+    def __init__(self, revenue_tracker: Optional[Any] = None):
+        self.revenue = revenue_tracker or get_revenue_tracker()
+
+    def record_stage(self, stage: str, source: str, client: str = "", amount: float = 0.0, meta: dict | None = None) -> int:
+        return self.revenue.record_action(source, stage, client=client, amount=amount, status=stage, meta=meta)
+
+    def get_funnel_metrics(self, days: int = 30) -> dict[str, Any]:
+        return self.revenue.get_funnel_metrics(days)
+
+
 class MoneyEngine:
     """Autonomous strategic engine managing income-generating opportunities."""
 
@@ -36,6 +54,7 @@ class MoneyEngine:
         self.ethics = get_moral_engine()
         self.audit = get_audit_logger()
         self.revenue = get_revenue_tracker()
+        self.funnel = FunnelTracker(self.revenue)
         self.queue = get_approval_queue()
         self.email = get_email_agent()
         self.upwork = UpworkAgent()
@@ -208,12 +227,17 @@ class MoneyEngine:
         plat = opportunity.get("platform")
         if plat == "upwork":
             v = self.upwork.submit_proposal(opportunity, user_approved=True)
-            self.revenue.record_action("upwork", "proposal_submit", client=opportunity.get("client_id", ""), amount=float(opportunity.get("bid", 150.0)), status="submitted")
+            self.funnel.record_stage("proposal_sent", "upwork", client=opportunity.get("client_id", ""), amount=float(opportunity.get("bid", 150.0)), meta={"gig": opportunity.get("title")})
             return v.to_dict()
         elif plat == "email":
             # Draft and log
+            self.funnel.record_stage("proposal_sent", "email", client=opportunity.get("from", ""), amount=0.0, meta={"subject": opportunity.get("title")})
             return {"ok": True, "status": "reviewed"}
         return {"ok": False, "error": f"Unknown platform: {plat}"}
+
+    def get_funnel_metrics(self, days: int = 30) -> dict[str, Any]:
+        """Return funnel conversion metrics across all monetization channels."""
+        return self.funnel.get_funnel_metrics(days)
 
 
 _global_money: Optional[MoneyEngine] = None

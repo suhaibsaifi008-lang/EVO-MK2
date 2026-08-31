@@ -245,32 +245,36 @@ class FinancialIntelligence:
             ]
 
     def financial_briefing(self) -> str:
-        """Generate a financial health briefing: current revenue, pending proposals, and opportunities."""
+        """Generate a financial health briefing: current revenue, funnel metrics, pending proposals, and opportunities."""
         try:
-            stats = self.revenue.get_metrics()
+            stats = self.revenue.get_stats(7)
             total_earned = stats.get("total_revenue", 0.0)
-            monthly_earned = stats.get("monthly_revenue", 0.0)
-        except Exception:
-            total_earned, monthly_earned = 0.0, 0.0
+            funnel = self.revenue.get_funnel_metrics(30)
+            stages = funnel.get("stages", {})
 
-        prompt = (
-            f"Generate a concise, motivating executive financial intelligence briefing for EVO MK2:\n"
-            f"Total Tracked Revenue: ${total_earned:.2f}\n"
-            f"This Month Revenue: ${monthly_earned:.2f}\n\n"
-            "Format:\n"
-            "1. Cashflow Status\n"
-            "2. Pipeline & Active Proposals\n"
-            "3. High-Leverage Strategic Recommendations (2 specific action items today)\n"
-        )
+            prompt = (
+                f"Generate a concise, motivating executive financial intelligence briefing for EVO MK2:\n"
+                f"Total Tracked Revenue: ${total_earned:.2f}\n"
+                f"Funnel Pipeline (Past 30 Days):\n"
+                f"- Proposals Sent: {stages.get('proposal_sent', 0)}\n"
+                f"- Client Responses: {stages.get('client_responded', 0)} ({funnel.get('response_rate', 0)*100:.0f}% rate)\n"
+                f"- Hired / Contracts: {stages.get('hired', 0)} (Win rate: {funnel.get('win_rate', 0)*100:.0f}%)\n"
+                f"- Deliveries Completed: {stages.get('delivered', 0)}\n"
+                f"- Payouts Received: {stages.get('paid', 0)}\n\n"
+                "Format:\n"
+                "1. Cashflow Status\n"
+                "2. Pipeline & Active Proposals\n"
+                "3. High-Leverage Strategic Recommendations (2 specific action items today)\n"
+            )
 
-        try:
             reply = llm.chat([
                 {"role": "system", "content": "You are EVO's chief financial officer and growth advisor."},
                 {"role": "user", "content": prompt},
             ], role="fast", temperature=0.2)
             return reply.strip()
         except Exception as exc:
-            return f"Financial briefing: Total revenue tracked is ${total_earned:.2f}. Pipeline active."
+            log.warning("Financial briefing synthesis failed: %s", exc)
+            return f"Financial briefing unavailable: {exc}"
 
 
 _global_finance: Optional[FinancialIntelligence] = None

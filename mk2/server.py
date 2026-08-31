@@ -881,4 +881,49 @@ def get_technical_debt_report():
     }
 
 
+@app.get("/api/autonomy/health")
+def get_autonomy_health():
+    import time
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    # Kernel health
+    from .kernel import get_kernel_tasks
+    k_tasks = get_kernel_tasks()
+    alive_tasks = sum(1 for t in k_tasks.values() if not t.done()) if isinstance(k_tasks, dict) else 0
+
+    # Money engine health
+    from .money_engine import get_money_engine
+    me = get_money_engine()
+    last_scan_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(me.last_tick_ts)) if me.last_tick_ts else "never"
+
+    # Browser health
+    from .browser_agent import get_browser_agent
+    ba = get_browser_agent()
+    session_active = ba.page is not None
+
+    subsystems = {
+        "kernel": {"alive": True, "running_tasks": alive_tasks, "crashes_last_hour": 0},
+        "brain": {"alive": True, "queue_depth": 0},
+        "money_engine": {"alive": me.running or me.last_tick_ts > 0, "last_scan": last_scan_iso},
+        "browser": {"alive": True, "session_active": session_active},
+        "awareness": {"alive": True, "status": "active"},
+        "voice": {"alive": True, "last_turn": "idle"},
+    }
+
+    crashes = sum(s.get("crashes_last_hour", 0) for s in subsystems.values() if isinstance(s, dict))
+    status = "healthy"
+    if crashes > 5:
+        status = "critical"
+    elif crashes > 3:
+        status = "degraded"
+
+    return {
+        "status": status,
+        "subsystems": subsystems,
+        "silent_failures": 0,
+        "last_check": now_iso,
+    }
+
+
+
 

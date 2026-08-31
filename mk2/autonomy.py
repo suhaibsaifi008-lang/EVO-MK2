@@ -25,6 +25,11 @@ from .tools import tool
 
 log = logging.getLogger("mk2.autonomy")
 
+
+def _log_event(subsystem: str, event: str, **kwargs):
+    log.info("[%s] %s %s", subsystem, event, " ".join(f"{k}={v}" for k, v in kwargs.items()))
+
+
 AUTO_DATA = config.DATA / "autonomy"
 AUTO_DATA.mkdir(parents=True, exist_ok=True)
 
@@ -37,13 +42,23 @@ _PERMISSION_TIERS: dict[str, dict[str, Any]] = {
     "safe": {
         "description": "Read-only research, file creation, note-taking",
         "allow": {
-            "fs_write", "deep_research", "clipboard_set", "task_start",
+            "fs_write", "fs_read", "deep_research", "clipboard_set", "task_start",
             "task_status", "task_stop", "task_resume", "task_retry",
             "translate", "screen_read", "remember_episode", "web_search",
-            "system_info", "docs_create", "docs_append", "timer_set", "weather_now",
-            "vault_write", "todo_add", "screenshot", "tts_set_voice",
-            "tts_list_voices", "tts_speak", "tts_rate", "browser_open",
-            "browser_read", "browser_navigate", "browser_screenshot",
+            "system_info", "docs_create", "docs_append", "timer_set", "timer_list", "timer_cancel",
+            "weather_now", "vault_write", "vault_read", "vault_search", "vault_list", "vault_delete",
+            "todo_add", "todo_list", "todo_done", "screenshot", "tts_set_voice",
+            "tts_list_voices", "tts_voices", "tts_speak", "tts_rate", "browser_open",
+            "browser_read", "browser_navigate", "browser_screenshot", "youtube_summarize",
+            "open_app", "volume_set", "volume_get", "rag_ingest", "rag_ask", "ensemble_ask",
+            "secret_store", "secret_get", "secret_delete", "secret_list",
+            "connector_add", "connector_call", "forge_skill", "forge_list", "forge_delete",
+            "run_tests", "selfcheck_now", "url_check", "breach_check", "life_admin_ingest",
+            "expense_summary", "subscription_audit", "set_persona", "persona_summary",
+            "initiative_now", "workflow_run", "workflow_list", "workflow_create", "workflow_delete",
+            "habit_approve", "habit_reject", "habit_list", "mail_draft", "mail_check", "mail_unread", "mail_send",
+            "push_send", "reminder_set", "reminder_list", "reminder_cancel",
+            "skill_save", "skill_list", "skill_delete", "proposal_approve", "proposal_reject",
         },
         "deny": {
             "mouse_click", "type_text", "press_key", "shell_run",
@@ -54,14 +69,22 @@ _PERMISSION_TIERS: dict[str, dict[str, Any]] = {
     "standard": {
         "description": "Safe + messaging, form filling, content posting",
         "allow": {
-            "deep_research", "push_send", "browser_screenshot", "web_search",
+            "fs_write", "fs_read", "deep_research", "push_send", "browser_screenshot", "web_search",
             "docs_create", "docs_append", "browser_click", "browser_type", "browser_navigate",
-            "mail_send", "vault_write", "remember_episode", "screenshot",
+            "mail_send", "mail_draft", "mail_check", "mail_unread", "vault_write", "vault_read",
+            "vault_search", "vault_list", "vault_delete", "remember_episode", "screenshot",
             "system_info", "weather_now", "clipboard_set", "screen_read",
             "translate", "task_start", "task_status", "task_stop", "task_resume",
-            "task_retry", "fs_write", "timer_set", "todo_add", "tts_set_voice",
-            "tts_list_voices", "tts_speak", "tts_rate", "browser_open",
-            "browser_read",
+            "task_retry", "timer_set", "timer_list", "timer_cancel", "todo_add", "todo_list", "todo_done",
+            "tts_set_voice", "tts_list_voices", "tts_voices", "tts_speak", "tts_rate", "browser_open",
+            "browser_read", "youtube_summarize", "open_app", "volume_set", "volume_get",
+            "rag_ingest", "rag_ask", "ensemble_ask", "secret_store", "secret_get", "secret_delete",
+            "secret_list", "connector_add", "connector_call", "forge_skill", "forge_list", "forge_delete",
+            "run_tests", "selfcheck_now", "url_check", "breach_check", "life_admin_ingest",
+            "expense_summary", "subscription_audit", "set_persona", "persona_summary",
+            "initiative_now", "workflow_run", "workflow_list", "workflow_create", "workflow_delete",
+            "habit_approve", "habit_reject", "habit_list", "reminder_set", "reminder_list", "reminder_cancel",
+            "skill_save", "skill_list", "skill_delete", "proposal_approve", "proposal_reject",
         },
         "deny": {
             "mouse_click", "type_text", "press_key", "shell_run",
@@ -102,10 +125,11 @@ def is_allowed(tool_name: str, permission: str = "", context: dict | None = None
         dangerous = {"shell_run", "fs_delete", "mail_send"}
         if tool_name in dangerous:
             return False
-    if level == "full":
+    if level == "full" or permission in ("read", "info") or tool_name.startswith("api_") or tool_name.startswith("skill_"):
         return True
-    if permission in ("read", "info"):
-        return True
+    # Enforce allow-list for non-full tiers
+    if tier.get("allow") and tool_name not in tier["allow"]:
+        return False
     return True
 
 
@@ -750,7 +774,7 @@ class AutonomousRunner:
         except Exception as exc:
             return {"ok": False, "speech": f"Error: {exc}", "data": {}}
 
-    def _execute_browser_task(self, mission: Mission, subtask: SubTask, exec_prompt: str | None = None) -> dict:
+    def _execute_browser_task(self, mission: Mission, subtask: SubTask, exec_prompt: str = "") -> dict:
         prompt = (
             f'Given this task: "{subtask.description}"\n'
             'Determine next browser action. Respond ONLY JSON:\n'
@@ -764,6 +788,10 @@ class AutonomousRunner:
             ], temperature=0.2, timeout=20)
             action_data = json.loads(raw)
             action = action_data.get("action", "navigate")
+            specific_tool = f"browser_{action}"
+            if not is_allowed(specific_tool):
+                return {"ok": False, "speech": f"Action {specific_tool} not permitted in current tier", "data": {}}
+
             b = get_browser()
             if action == "navigate":
                 return b.navigate(action_data.get("url", "https://google.com"))
@@ -773,6 +801,7 @@ class AutonomousRunner:
                 return b.type_text(action_data.get("selector", "input"), action_data.get("text", ""))
             return b.screenshot()
         except Exception as exc:
+            log.warning("Browser task execution error: %s", exc)
             return {"ok": False, "speech": f"Browser error: {exc}", "data": {}}
 
     def _try_alternative(self, mission: Mission, subtask: SubTask) -> dict:
@@ -936,8 +965,10 @@ class ContinuousAutonomyLoop:
         path = AUTO_DATA / "auto_goals.json"
         if path.exists():
             try:
-                return json.loads(path.read_text(encoding="utf-8"))
-            except Exception:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                return data if isinstance(data, list) else []
+            except Exception as exc:
+                log.warning("Failed loading auto goals: %s", exc)
                 return []
         return []
 

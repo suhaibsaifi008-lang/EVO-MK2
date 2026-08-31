@@ -418,9 +418,9 @@ _queue_instance = _q_mod.Queue()
 
 def _publish_alert_wrapper(topic: str, payload: dict) -> None:
 	"""Thread-safe publish to the event bus."""
-	from .bus import publish_threadsafe
+	from .bus import bus
 
-	publish_threadsafe(topic, payload)
+	bus.publish(topic, payload)
 
 
 _original_run_checks = run_checks

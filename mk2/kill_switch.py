@@ -44,21 +44,21 @@ class KillSwitch:
         # 1. Stop money engine
         try:
             self.money.stop()
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("KillSwitch: failed to stop money engine: %s", exc)
 
         # 2. Stop browser agent
         try:
             self.browser.stop()
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("KillSwitch: failed to stop browser agent: %s", exc)
 
         # 3. Stop JARVIS brain thread
         try:
             from .jarvis_agent import get_jarvis_agent
             get_jarvis_agent().stop()
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("KillSwitch: failed to stop JARVIS agent: %s", exc)
 
         # 4. Cancel all supervised kernel tasks
         tasks_cancelled = self.stop_kernel_subsystems()
@@ -69,8 +69,8 @@ class KillSwitch:
             tg_event = getattr(telegram_link, "_telegram_stop_event", None)
             if tg_event:
                 tg_event.set()
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("KillSwitch: failed to stop telegram: %s", exc)
 
         # 6. Downgrade consent level
         self.consent.set_level("assist")

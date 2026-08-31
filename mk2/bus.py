@@ -9,10 +9,18 @@ Contract (fixes MK1's announcement-replay bug class):
 """
 import asyncio
 import itertools
+import logging
 import threading
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Callable
+
+log = logging.getLogger("mk2.bus")
+
+
+def _log_event(subsystem: str, event: str, **kwargs):
+    log.info("[%s] %s %s", subsystem, event, " ".join(f"{k}={v}" for k, v in kwargs.items()))
+
 
 _time = __import__("time").time
 
@@ -86,8 +94,8 @@ class Bus:
             for cb in sub.callbacks:
                 try:
                     cb(ev)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log.warning("Bus subscriber %s failed on topic %s: %s", cb, topic, exc)
             q = sub.queue
             if q is not None:
                 self._offer(q, ev)

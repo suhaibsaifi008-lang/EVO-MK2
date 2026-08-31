@@ -21,21 +21,19 @@ ROLES = ("primary", "fast", "reasoning", "voice")
 # table (score / intelligence). When one model's quota dries up we slide
 # down this list automatically instead of leaving the provider.
 PRIMARY_LADDER = [
-    "claude-haiku-4-5",
-    "claude-sonnet-4-6",
-    "claude-opus-4-6",
+    "claude-sonnet-4-20250514",
     "claude-haiku-4-5-20251001",
+    "gpt-4o-mini",
+    "gemini-2.0-flash",
 ]
 VOICE_LADDER = [
-    "claude-haiku-4-5",
     "claude-haiku-4-5-20251001",
+    "gpt-4o-mini",
     "ollama:qwen2.5:7b",
-    "ollama:phi4-mini",
-    "claude-sonnet-4-6",
 ]
 MODEL_LADDERS = {
-    "fast": ["claude-haiku-4-5", "claude-haiku-4-5-20251001", "claude-sonnet-4-6"],
-    "reasoning": ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"],
+    "fast": ["claude-haiku-4-5-20251001", "gpt-4o-mini", "ollama:qwen2.5:7b"],
+    "reasoning": ["claude-sonnet-4-20250514", "gpt-4o", "gemini-2.0-flash"],
     "voice": VOICE_LADDER,
 }
 

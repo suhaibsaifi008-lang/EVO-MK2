@@ -102,6 +102,56 @@ class RevenueTracker:
             lines.append("*No revenue deposits recorded this period.*")
         return "\n".join(lines)
 
+    def get_funnel_metrics(self, days: int = 30) -> dict[str, Any]:
+        """Query and compute metrics across all stages of the monetization funnel."""
+        cutoff = time.time() - (days * 86400)
+        stages = {
+            "proposal_sent": 0,
+            "client_viewed": 0,
+            "client_responded": 0,
+            "hired": 0,
+            "delivered": 0,
+            "paid": 0,
+        }
+        total_value = 0.0
+
+        try:
+            with sqlite3.connect(db.DB_PATH) as con:
+                con.row_factory = sqlite3.Row
+                rows = con.execute("SELECT action_type, status, amount FROM autonomous_revenue WHERE ts >= ?", (cutoff,)).fetchall()
+                for r in rows:
+                    act = str(r["action_type"] or "")
+                    st = str(r["status"] or "")
+                    amt = float(r["amount"] or 0.0)
+
+                    if act in stages:
+                        stages[act] += 1
+                    elif st in stages:
+                        stages[st] += 1
+
+                    if st == "paid" or act == "payment_received":
+                        total_value += amt
+                        stages["paid"] = stages.get("paid", 0) + 1
+        except Exception as exc:
+            log.warning("Failed querying funnel metrics: %s", exc)
+
+        proposals = max(1, stages.get("proposal_sent", 0))
+        response_rate = round(stages.get("client_responded", 0) / proposals, 2)
+        win_rate = round(stages.get("hired", 0) / proposals, 2)
+        delivery_rate = round(stages.get("delivered", 0) / max(1, stages.get("hired", 1)), 2)
+        payout_rate = round(stages.get("paid", 0) / max(1, stages.get("hired", 1)), 2)
+
+        return {
+            "period_days": days,
+            "stages": stages,
+            "response_rate": response_rate,
+            "win_rate": win_rate,
+            "delivery_rate": delivery_rate,
+            "payout_rate": payout_rate,
+            "total_paid": round(total_value, 2),
+            "expected_value_per_hour": round(total_value / max(1, days * 8), 2),
+        }
+
 
 _global_rev: Optional[RevenueTracker] = None
 
