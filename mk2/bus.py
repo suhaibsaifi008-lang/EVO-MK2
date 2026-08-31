@@ -93,7 +93,10 @@ class Bus:
         for sub in subs:
             for cb in sub.callbacks:
                 try:
-                    cb(ev)
+                    try:
+                        cb(ev)
+                    except TypeError:
+                        cb(ev.topic, ev.payload)
                 except Exception as exc:
                     log.warning("Bus subscriber %s failed on topic %s: %s", cb, topic, exc)
             q = sub.queue

@@ -606,6 +606,9 @@ async def ws_voice(ws: WebSocket) -> None:
         except Exception as exc:  # noqa: BLE001
             reply = reply or f"Error: {str(exc)[:150]}"
 
+        if not reply:
+            reply = "I've processed your request. Let me know how else I can help."
+
         tail = acc_tail.strip()
         if tail and want_audio and not state["cancel"]:
             aq.put_nowait(tail)

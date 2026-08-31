@@ -4,6 +4,7 @@ import logging
 import os
 import threading
 import sys
+from typing import Any
 
 from . import config, db, llm, tools
 from .bus import bus
@@ -136,9 +137,15 @@ def main(voice: bool = True) -> None:
     wd = _watchdog.init_watchdog(_loop)
     _loop.create_task(wd.start(), name="watchdog-main")
 
-    def _journal_callback(topic: str, payload: dict) -> None:
-        if not topic.startswith("system.health"):
-            db.record_event(topic, payload)
+    def _journal_callback(event_or_topic: Any, payload: dict | None = None) -> None:
+        if hasattr(event_or_topic, "topic"):
+            t = event_or_topic.topic
+            p = event_or_topic.payload
+        else:
+            t = str(event_or_topic)
+            p = payload or {}
+        if not t.startswith("system.health"):
+            db.record_event(t, p)
 
     bus.subscribe("*", _journal_callback)
 

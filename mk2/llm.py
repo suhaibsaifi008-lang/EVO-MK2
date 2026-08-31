@@ -324,14 +324,33 @@ def _deadline_iter(iterator, first_timeout: float = 20.0, gap_timeout: float = 2
         yield item
 
 
+def _normalize_anthropic_messages(messages: list[dict]) -> list[dict]:
+    """Ensure messages strictly alternate between user and assistant, starting with user."""
+    raw = [m for m in messages if m.get("role") in ("user", "assistant") and str(m.get("content", "")).strip()]
+    if not raw:
+        return [{"role": "user", "content": "hello"}]
+    merged = []
+    for m in raw:
+        role = m["role"]
+        content = str(m["content"]).strip()
+        if not content:
+            continue
+        if merged and merged[-1]["role"] == role:
+            merged[-1]["content"] += f"\n\n{content}"
+        else:
+            merged.append({"role": role, "content": content})
+    if merged and merged[0]["role"] != "user":
+        merged.insert(0, {"role": "user", "content": "Context:"})
+    return merged
+
+
 def _anthropic_chat(messages: list[dict], model: str, temperature: float, timeout: int = 60,
                     base: str = "", key: str = "") -> str:
     """Direct HTTP call to Anthropic Messages API (with thinking block filtering)."""
     key = key or settings.anthropic_key
     base = (base or settings.anthropic_base or "https://api.anthropic.com").rstrip("/")
     sys_prompts = [m["content"] for m in messages if m["role"] == "system"]
-    chat_msgs = [{"role": m["role"], "content": m["content"]}
-                 for m in messages if m["role"] != "system"]
+    chat_msgs = _normalize_anthropic_messages(messages)
     payload = {
         "model": model,
         "max_tokens": 4096,
@@ -359,7 +378,9 @@ def _anthropic_chat(messages: list[dict], model: str, temperature: float, timeou
             if texts:
                 raw_text = "\n".join(texts).strip()
             elif content and isinstance(content[0], dict):
-                raw_text = (content[0].get("text", "") or "").strip()
+                raw_text = (content[0].get("text", "") or content[0].get("thinking", "") or "").strip()
+        elif isinstance(content, str):
+            raw_text = content.strip()
         else:
             raw_text = (result.get("text", "") or "").strip()
         if _is_proxy_error(raw_text):
@@ -373,8 +394,7 @@ def _anthropic_chat_stream(messages: list[dict], model: str, temperature: float,
     key = key or settings.anthropic_key
     base = (base or settings.anthropic_base or "https://api.anthropic.com").rstrip("/")
     sys_prompts = [m["content"] for m in messages if m["role"] == "system"]
-    chat_msgs = [{"role": m["role"], "content": m["content"]}
-                 for m in messages if m["role"] != "system"]
+    chat_msgs = _normalize_anthropic_messages(messages)
     payload = {
         "model": model,
         "max_tokens": 4096,

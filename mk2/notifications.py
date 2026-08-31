@@ -46,12 +46,16 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
     return True
 
 
-def _on_notify(topic: str, payload: dict[str, Any]) -> None:
-    text = str(payload.get("text", payload.get("speech", ""))).strip()
+def _on_notify(event_or_topic: Any, payload: dict[str, Any] | None = None) -> None:
+    if hasattr(event_or_topic, "payload"):
+        p = event_or_topic.payload
+    else:
+        p = payload or {}
+    text = str(p.get("text", p.get("speech", ""))).strip()
     if not text:
         return
-    kind = str(payload.get("kind", "notification"))
-    urgency = str(payload.get("urgency", "medium"))
+    kind = str(p.get("kind", "notification"))
+    urgency = str(p.get("urgency", "medium"))
     title = f"EVO [{kind.capitalize()}]" if kind != "notification" else "EVO Assistant"
     show_toast(title, text, urgency)
 

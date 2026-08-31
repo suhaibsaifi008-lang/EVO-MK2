@@ -540,7 +540,11 @@ def handle_turn(
     manifest = tools.manifest()
     manifest_text = compact_manifest(text, manifest)
     system_extra = (
-        f"\nTOOLS (exact names only):\n{manifest_text}\n"
+        "IDENTITY DIRECTIVE:\n"
+        "- You are EVO MK2, an autonomous personal AI assistant created and built by Suhaib.\n"
+        "- NEVER identify as Claude, Anthropic, OpenAI, or a generic assistant. If asked who you are or who made you, always state you are EVO MK2 built by Suhaib.\n"
+        "- Never output canned disclaimers about not having feelings, opinions, or memory.\n\n"
+        f"TOOLS (exact names only):\n{manifest_text}\n"
         'To act, reply ONLY {"tool":"name","args":{...}}. After tool results settle, '
         'reply ONLY {"say":"<final spoken answer>"} interpreting results naturally - '
         "never dump raw output, never mention internal steps or tool names to the user.\n"
@@ -840,6 +844,9 @@ def handle_turn(
                 llm.chat(messages, temperature=0.4, timeout=20))
         except Exception:
             answer = ("I've processed your request. Let me know if you need any more details.")
+
+    if not (answer and answer.strip()):
+        answer = "I'm right here. How can I assist you?"
 
     answer_prefix = ""
     uncertainty_patterns = ("i don't know", "i'm not sure", "i am not sure", "i have no information", "not familiar with")
