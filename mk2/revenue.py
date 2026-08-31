@@ -129,7 +129,7 @@ class RevenueTracker:
                     elif st in stages:
                         stages[st] += 1
 
-                    if st == "paid" or act == "payment_received":
+                    elif st == "paid" or act == "payment_received":
                         total_value += amt
                         stages["paid"] = stages.get("paid", 0) + 1
         except Exception as exc:

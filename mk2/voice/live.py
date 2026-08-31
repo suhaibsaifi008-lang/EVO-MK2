@@ -1,4 +1,4 @@
-﻿"""Gemini Live duplex session (proven MK1 bridge, trimmed for MK2)."""
+"""Gemini Live duplex session (proven MK1 bridge, trimmed for MK2)."""
 import asyncio
 import queue
 import threading
@@ -90,6 +90,8 @@ class LiveSession:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.audio_in: queue.Queue = queue.Queue(maxsize=200)
+        from .barge_in import BargeInManager
+        self.barge_in_mgr = BargeInManager(on_interrupt=lambda: self.on_interrupt())
 
     def start(self) -> bool:
         try:
@@ -121,6 +123,8 @@ class LiveSession:
                 except Exception:
                     chunk = None
                 if chunk is not None:
+                    # Process frame for local barge-in trigger
+                    self.barge_in_mgr.process_frame(chunk, is_playing=True)
                     blob = types.Blob(data=chunk, mime_type=f"audio/pcm;rate={INPUT_RATE}")
                     try:
                         await session.send_realtime_input(audio=blob)

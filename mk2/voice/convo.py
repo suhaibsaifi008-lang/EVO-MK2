@@ -35,7 +35,7 @@ def _should_finalize(kind: str, text: str, quiet: bool,
         return True
     key = text.lower()[:80]
     return (kind == "partial" and quiet and key == last_key
-            and now - last_change >= 0.8)
+            and now - last_change >= 0.4)
 
 
 EXIT_PHRASES = ("stop listening", "close the mic", "close mic", "goodbye")
@@ -46,6 +46,8 @@ class ConversationMode:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.speaker = Speaker()
+        from .barge_in import BargeInManager
+        self.barge_in_mgr = BargeInManager(on_interrupt=lambda: getattr(self.speaker, "shut_up", lambda: None)())
 
     @property
     def running(self) -> bool:
@@ -69,7 +71,7 @@ class ConversationMode:
         except Exception:
             pass
 
-    # ---------------------------------------------------------------- loop
+    # ---------------- ------------------------------------------------ loop
 
     def _run(self) -> None:
         audio_q: "queue.Queue[bytes]" = queue.Queue(maxsize=400)
@@ -88,13 +90,13 @@ class ConversationMode:
             stream.start()
         except Exception as exc:
             bus.publish("notify.out", {"kind": "voice",
-                                       "text": f"Mic unavailable: {exc}"})
+                                        "text": f"Mic unavailable: {exc}"})
             return
 
         s = stt_mod.Stream()
         if not s.ok:
             bus.publish("notify.out", {"kind": "voice",
-                                       "text": "No STT model - convo off."})
+                                        "text": "No STT model - convo off."})
             return
 
         self.speaker.say("Conversation mode active.")
@@ -111,6 +113,8 @@ class ConversationMode:
                     continue
                 lvl = _rms(frame)
                 noise_floor = 0.9 * noise_floor + 0.1 * lvl
+                speaking = getattr(self.speaker, "is_speaking", False)
+                self.barge_in_mgr.process_frame(frame, is_playing=speaking)
                 kind, text = s.feed(frame)
                 if not text:
                     continue

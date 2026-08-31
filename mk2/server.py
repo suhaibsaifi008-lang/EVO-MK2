@@ -885,11 +885,22 @@ def get_technical_debt_report():
 def get_autonomy_health():
     import time
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    now_ts = time.time()
 
-    # Kernel health
-    from .kernel import get_kernel_tasks
+    # Kernel health & crashes
+    from .kernel import get_kernel_tasks, _restarts
     k_tasks = get_kernel_tasks()
     alive_tasks = sum(1 for t in k_tasks.values() if not t.done()) if isinstance(k_tasks, dict) else 0
+    crashes_last_hour = sum(_restarts.values()) if isinstance(_restarts, dict) else 0
+
+    # Silent failures count from audit log
+    silent_failures = 0
+    try:
+        from . import db
+        recent = db.recent_audit(100)
+        silent_failures = sum(1 for entry in recent if not entry.get("ok", True))
+    except Exception as exc:
+        log.warning("Health check audit scan note: %s", exc)
 
     # Money engine health
     from .money_engine import get_money_engine
@@ -901,26 +912,55 @@ def get_autonomy_health():
     ba = get_browser_agent()
     session_active = ba.page is not None
 
+    # Awareness alive check
+    awareness_alive = False
+    try:
+        from . import awareness
+        snap = awareness.snapshot()
+        awareness_alive = bool(snap)
+    except Exception:
+        awareness_alive = False
+
+    # Brain alive check
+    brain_alive = False
+    try:
+        from .jarvis_agent import get_jarvis_agent
+        ja = get_jarvis_agent()
+        if hasattr(ja, "running"):
+            brain_alive = ja.running
+    except Exception:
+        brain_alive = False
+
+    # TTFT tracker stats
+    from . import llm
+    ttft_stats = {}
+    if hasattr(llm, "get_ttft_stats"):
+        ttft_stats = llm.get_ttft_stats()
+    elif hasattr(llm, "_ttft"):
+        ttft_stats = dict(llm._ttft)
+
     subsystems = {
-        "kernel": {"alive": True, "running_tasks": alive_tasks, "crashes_last_hour": 0},
-        "brain": {"alive": True, "queue_depth": 0},
+        "kernel": {"alive": alive_tasks > 0 or len(k_tasks) == 0, "running_tasks": alive_tasks, "crashes_last_hour": crashes_last_hour},
+        "brain": {"alive": brain_alive, "queue_depth": 0},
         "money_engine": {"alive": me.running or me.last_tick_ts > 0, "last_scan": last_scan_iso},
         "browser": {"alive": True, "session_active": session_active},
-        "awareness": {"alive": True, "status": "active"},
+        "awareness": {"alive": awareness_alive, "status": "active" if awareness_alive else "degraded"},
         "voice": {"alive": True, "last_turn": "idle"},
     }
 
-    crashes = sum(s.get("crashes_last_hour", 0) for s in subsystems.values() if isinstance(s, dict))
+    total_failures = crashes_last_hour + silent_failures
     status = "healthy"
-    if crashes > 5:
+    if total_failures > 5:
         status = "critical"
-    elif crashes > 3:
+    elif total_failures > 2:
         status = "degraded"
 
     return {
         "status": status,
         "subsystems": subsystems,
-        "silent_failures": 0,
+        "crashes_last_hour": crashes_last_hour,
+        "silent_failures": silent_failures,
+        "ttft_measured": ttft_stats,
         "last_check": now_iso,
     }
 

@@ -63,16 +63,39 @@ _cd_lock = threading.Lock()
 
 # measured first-token latency (EWMA) -> the router sticks to fast routes
 _ttft: dict[str, float] = {}
+_ttft_history: list[tuple[float, str, float]] = []  # (timestamp, key, seconds)
 _TTFT_ALPHA = 0.35
 _DEFAULT_TTFT = 3.0
 
 
 def _record_ttft(prov_name: str, model: str, seconds: float) -> None:
     key = f"{prov_name}:{model}"
+    now = time.time()
+    if seconds > 3.0 and ("fast" in model or "mini" in model or "haiku" in model):
+        import logging
+        logging.getLogger("mk2.llm").warning("TTFT exceeded 3s for fast model %s (%s): %.2fs", model, prov_name, seconds)
     with _cd_lock:
         prev = _ttft.get(key)
         _ttft[key] = round(seconds if prev is None
                            else (1 - _TTFT_ALPHA) * prev + _TTFT_ALPHA * seconds, 3)
+        _ttft_history.append((now, key, seconds))
+        # Keep only last 1 hour of history
+        cutoff = now - 3600
+        while _ttft_history and _ttft_history[0][0] < cutoff:
+            _ttft_history.pop(0)
+
+
+def get_ttft_stats() -> dict[str, Any]:
+    now = time.time()
+    cutoff = now - 3600
+    with _cd_lock:
+        recent = [s for ts, _, s in _ttft_history if ts >= cutoff]
+        avg_1h = round(sum(recent) / len(recent), 3) if recent else 0.0
+        return {
+            "current_ewma": dict(sorted(_ttft.items(), key=lambda kv: kv[1])),
+            "avg_last_hour_s": avg_1h,
+            "samples_last_hour": len(recent),
+        }
 
 
 def _speed_rank(p: tuple[dict, str]) -> float:

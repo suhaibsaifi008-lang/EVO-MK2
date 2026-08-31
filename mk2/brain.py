@@ -747,8 +747,8 @@ def handle_turn(
                 _, validated = validate_response(answer)
                 if validated:
                     answer = validated
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning("Response validation failed: %s", exc)
         if answer:
             break
 

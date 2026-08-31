@@ -300,6 +300,22 @@ class UpworkAgent:
                         }}
                     }}
                     """, cover_note)
+                    # Click submit button
+                    selectors = [
+                        'button:has-text("Submit")',
+                        'button[type="submit"]',
+                        'input[type="submit"]',
+                        '.submit-btn',
+                        'button[aria-label*="submit" i]'
+                    ]
+                    for sel in selectors:
+                        try:
+                            btn = self.browser.page.query_selector(sel)
+                            if btn:
+                                btn.click()
+                                break
+                        except Exception as exc:
+                            log.warning("Submit button selector %s click note: %s", sel, exc)
             except Exception as exc:
                 log.warning("Browser proposal form automation note: %s", exc)
 

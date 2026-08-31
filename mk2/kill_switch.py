@@ -21,6 +21,11 @@ class KillSwitch:
         self.consent = get_consent_manager()
         self.browser = get_browser_agent()
         self.money = get_money_engine()
+        # Pre-import subsystems so stop_all has 0ms import latency
+        try:
+            from . import kernel, jarvis_agent, telegram_link
+        except Exception:
+            pass
 
     def stop_kernel_subsystems(self) -> int:
         """Cancel all supervised asyncio kernel tasks."""
@@ -32,8 +37,8 @@ class KillSwitch:
                     if not task.done():
                         task.cancel()
                         cancelled += 1
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log.warning("KillSwitch: failed to cancel task %s: %s", name, exc)
         except Exception as exc:
             log.debug("Kernel task cancellation note: %s", exc)
         return cancelled

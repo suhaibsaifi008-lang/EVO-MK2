@@ -125,7 +125,11 @@ def is_allowed(tool_name: str, permission: str = "", context: dict | None = None
         dangerous = {"shell_run", "fs_delete", "mail_send"}
         if tool_name in dangerous:
             return False
-    if level == "full" or permission in ("read", "info") or tool_name.startswith("api_") or tool_name.startswith("skill_"):
+    if level == "full" or permission in ("read", "info"):
+        return True
+    # Registered dynamic skills and REST connectors are validated upon creation
+    from .tools import _REGISTRY
+    if tool_name in _REGISTRY and (tool_name.startswith("skill_") or tool_name.startswith("api_")):
         return True
     # Enforce allow-list for non-full tiers
     if tier.get("allow") and tool_name not in tier["allow"]:

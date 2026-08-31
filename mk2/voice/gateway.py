@@ -28,6 +28,9 @@ FRAME = 1280  # 80ms int16 mono
 IDLE_EXIT = 45.0
 
 
+from .barge_in import BargeInManager
+
+
 class Gateway:
     def __init__(self) -> None:
         self.state = "off"
@@ -37,6 +40,7 @@ class Gateway:
         self.speaker = Speaker()
         self.audio_q: "queue.Queue[bytes]" = queue.Queue(maxsize=300)
         self.stream = None
+        self.barge_in_mgr = BargeInManager(on_interrupt=self.barge_in_local)
 
     # ---------------- lifecycle ----------------
 
@@ -221,6 +225,7 @@ class Gateway:
             # Barge-in: if user starts speaking while TTS is playing, interrupt TTS immediately
             if self.speaker.is_speaking and lvl > max(500.0, noise_floor * 2.0):
                 self.barge_in_local()
+            self.barge_in_mgr.process_frame(frame, is_playing=self.speaker.is_speaking)
 
             kind, text = stream.feed(frame)
             if not text:
@@ -228,7 +233,7 @@ class Gateway:
             key = text.lower()[:80]
             quiet = lvl < max(320.0, noise_floor * 2.2)
             if kind == "partial" and quiet and key == last_partial_key \
-                    and time.time() - last_partial_change >= 0.7:
+                    and time.time() - last_partial_change >= 0.4:
                 kind = "final"
             if key != last_partial_key:
                 last_partial_key = key
