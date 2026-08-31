@@ -521,22 +521,21 @@ def handle_turn(
         "- When deep_research is called, it automatically runs in the background and saves a real briefing to your vault."
     )
 
-    # Money & CRM Context Injection
-    money_keywords = ("money", "earn", "pipeline", "client", "proposal", "invoice", "revenue", "income", "leads", "upwork", "freelance")
+    # Money & Business Intelligence Context Injection
+    money_keywords = ("money", "earn", "pipeline", "client", "proposal", "invoice", "revenue", "income", "leads", "upwork", "freelance", "business", "pricing", "rate")
     if any(k in text.lower() for k in money_keywords):
         try:
-            from .crm import get_crm
-            from .revenue import get_revenue_tracker
-            crm_pipe = get_crm().get_pipeline_summary()
-            funnel_stats = get_revenue_tracker().get_funnel_metrics(days=30)
-            crm_ctx = (
-                f"\nLIVE CRM & MONETIZATION CONTEXT:\n"
-                f"- 30-Day Revenue: ${funnel_stats.get('total_revenue', 0.0):,.2f} USD\n"
-                f"- Total Clients Tracked: {crm_pipe.get('total_clients', 0)}\n"
-                f"- Active Pipeline Value: ${crm_pipe.get('pipeline_value', 0.0):,.2f} USD (Pitched: {crm_pipe.get('stages', {}).get('pitched', 0)}, In Discussion: {crm_pipe.get('stages', {}).get('in_discussion', 0)}, Active: {crm_pipe.get('stages', {}).get('active', 0)})\n"
-                f"- Actively reference these real numbers, active client stages, and recommended next actions.\n"
+            from .money_intelligence import get_money_intelligence
+            mi = get_money_intelligence()
+            money_ctx = mi.get_context()
+            system_extra += (
+                f"\n=== YOUR BUSINESS & FINANCIAL CONTEXT ===\n"
+                f"{money_ctx}\n"
+                f"=== END OF BUSINESS CONTEXT ===\n"
+                "When the user asks about money, revenue, pipeline, or clients, use this real data to reason directly. "
+                "You understand their business — answer conversationally with specific numbers and actionable recommendations. "
+                "Do NOT call tools for analysis questions — you already have the full data snapshot. Use tools only for actions (submitting proposals, sending invoices, recording payments).\n"
             )
-            system_extra += crm_ctx
         except Exception:
             pass
 

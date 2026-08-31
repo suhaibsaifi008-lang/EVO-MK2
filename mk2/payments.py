@@ -32,9 +32,9 @@ class PaymentEvent:
 class PaymentDetector:
     """Scans multiple payment channels every 30 minutes."""
 
-    def __init__(self) -> None:
-        self.crm = get_crm()
-        self.revenue = get_revenue_tracker()
+    def __init__(self, crm: Optional[Any] = None, revenue: Optional[Any] = None) -> None:
+        self.crm = crm or get_crm()
+        self.revenue = revenue or get_revenue_tracker()
         self._processed_ids: set[str] = set()
 
     def process_payment(

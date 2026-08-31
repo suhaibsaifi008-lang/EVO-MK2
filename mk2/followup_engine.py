@@ -29,8 +29,8 @@ class FollowUpAction:
 class FollowupEngine:
     """Detects when to nudge clients with non-spammy personalized messages."""
 
-    def __init__(self) -> None:
-        self.crm = get_crm()
+    def __init__(self, crm: Optional[Any] = None) -> None:
+        self.crm = crm or get_crm()
 
     def get_pending_followups(self) -> list[FollowUpAction]:
         """Scan CRM for clients needing timely follow-ups."""

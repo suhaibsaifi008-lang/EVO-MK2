@@ -972,5 +972,97 @@ def get_autonomy_health():
     }
 
 
+# -------------------------------------------------------------------
+# Money Specialization API Endpoints
+# -------------------------------------------------------------------
+
+@app.get("/api/money/briefing")
+def get_money_briefing_api():
+    try:
+        from .money_briefing import get_money_briefing_engine
+        briefing = get_money_briefing_engine().generate_briefing()
+        return {"ok": True, "briefing": briefing}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.get("/api/money/pipeline")
+def get_money_pipeline_api():
+    try:
+        from .money_engine import get_money_engine
+        engine = get_money_engine()
+        return {
+            "ok": True,
+            "funnel": engine.revenue.get_funnel_metrics(days=30),
+            "running": engine.running,
+            "last_tick": engine.last_tick_ts,
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.get("/api/money/clients")
+def get_money_clients_api():
+    try:
+        from .crm import get_crm
+        crm = get_crm()
+        clients = []
+        for c in crm.list_clients():
+            clients.append({
+                "id": c.id,
+                "name": c.name,
+                "email": c.email,
+                "platform": c.platform,
+                "stage": c.stage,
+                "lead_score": c.lead_score,
+                "total_revenue": c.total_revenue,
+                "updated_at": c.updated_at,
+            })
+        return {"ok": True, "clients": clients}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.get("/api/money/opportunities")
+def get_money_opportunities_api():
+    try:
+        from .money_engine import get_money_engine
+        engine = get_money_engine()
+        opportunities = engine.scan_opportunities()
+        scored = engine.scorer.rank_opportunities(opportunities) if opportunities else []
+        return {
+            "ok": True,
+            "opportunities": [
+                {
+                    "id": o.id,
+                    "title": o.title,
+                    "platform": o.platform,
+                    "budget": o.budget,
+                    "win_probability": o.win_probability,
+                    "expected_value": o.expected_value,
+                    "recommendation": o.recommendation,
+                }
+                for o in scored[:20]
+            ],
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.post("/api/money/followup/{client_id}")
+def post_money_followup(client_id: str):
+    try:
+        from .followup_engine import get_followup_engine
+        engine = get_followup_engine()
+        actions = engine.get_pending_followups()
+        target = next((a for a in actions if a.client_id == client_id), None)
+        if not target:
+            return {"ok": False, "error": "No follow-up needed for this client"}
+        return {"ok": True, "draft": target.draft_message, "cadence": target.cadence}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+
 
 

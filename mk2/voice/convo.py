@@ -110,6 +110,18 @@ class ConversationMode:
         last_change = 0.0
         noise_floor = 300.0
 
+        processing = False
+        reply_queue = queue.Queue()
+
+        def _process(utterance_text: str):
+            try:
+                res = self.pipeline.process_utterance(utterance_text, surface="voice")
+                reply_queue.put(res)
+            except Exception as exc:
+                import logging
+                logging.getLogger("mk2.convo").warning("Voice pipeline error: %s", exc)
+                reply_queue.put(None)
+
         try:
             while not self._stop.is_set():
                 try:
@@ -121,6 +133,14 @@ class ConversationMode:
                 speaking = getattr(self.speaker, "is_speaking", False) or self.pipeline.is_active
                 self.barge_in_mgr.process_frame(frame, is_playing=speaking)
                 self.pipeline.feed_mic_frame(frame)
+
+                # Check if prior pipeline thread completed
+                try:
+                    _ = reply_queue.get_nowait()
+                    processing = False
+                except Exception:
+                    pass
+
                 kind, text = s.feed(frame)
                 if not text:
                     continue
@@ -133,8 +153,9 @@ class ConversationMode:
                     if any(x in low for x in EXIT_PHRASES):
                         self.speaker.say("Closing conversation mode.")
                         break
-                    # Use OverlappedVoicePipeline for sub-second streaming turn
-                    self.pipeline.process_utterance(text, surface="voice")
+                    if not processing:
+                        processing = True
+                        threading.Thread(target=_process, args=(text,), daemon=True, name="mk2-voice-worker").start()
                     continue
                 key = text.lower()[:80]
                 if key != last_key:

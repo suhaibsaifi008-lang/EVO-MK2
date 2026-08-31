@@ -21,10 +21,10 @@ log = logging.getLogger("mk2.money_briefing")
 class MoneyBriefingEngine:
     """Produces tactical daily financial & pipeline intelligence."""
 
-    def __init__(self) -> None:
-        self.crm = get_crm()
-        self.revenue = get_revenue_tracker()
-        self.invoicing = get_invoicing_engine()
+    def __init__(self, crm: Optional[Any] = None, revenue: Optional[Any] = None, invoicing: Optional[Any] = None) -> None:
+        self.crm = crm or get_crm()
+        self.revenue = revenue or get_revenue_tracker()
+        self.invoicing = invoicing or get_invoicing_engine()
 
     def generate_briefing(self) -> dict[str, Any]:
         """Compile live financial data and generate actionable Markdown briefing."""

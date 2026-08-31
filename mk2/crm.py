@@ -35,6 +35,10 @@ class Interaction:
     timestamp: float = field(default_factory=time.time)
     meta: dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def kind(self) -> str:
+        return self.type
+
 
 @dataclass
 class Client:
@@ -79,6 +83,7 @@ class CRM:
 
     def _save(self) -> None:
         try:
+            CLIENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
             raw_clients = {k: asdict(v) for k, v in self._clients.items()}
             CLIENTS_FILE.write_text(json.dumps(raw_clients, indent=2), encoding="utf-8")
             raw_ints = [asdict(i) for i in self._interactions]
@@ -190,15 +195,24 @@ class CRM:
             self._save()
             return interaction
 
+    def list_interactions(self, client_name: Optional[str] = None) -> list[Interaction]:
+        with self._lock:
+            if not client_name:
+                return list(self._interactions)
+            clean_id = re.sub(r"[^a-z0-9_]", "_", client_name.lower().strip())
+            return [i for i in self._interactions if i.client_id == clean_id]
+
     def record_payment(self, client_id_or_name: str, amount: float, source: str = "general") -> None:
         with self._lock:
             clean_id = re.sub(r"[^a-z0-9_]", "_", client_id_or_name.lower().strip())
-            if clean_id in self._clients:
+            if clean_id not in self._clients:
+                self._clients[clean_id] = Client(id=clean_id, name=client_id_or_name, total_revenue=amount, stage="active")
+            else:
                 self._clients[clean_id].total_revenue += amount
                 self._clients[clean_id].stage = "active"
                 self._clients[clean_id].updated_at = time.time()
-                self._clients[clean_id].lead_score = self.calculate_lead_score(self._clients[clean_id])
-                self._save()
+            self._clients[clean_id].lead_score = self.calculate_lead_score(self._clients[clean_id])
+            self._save()
         self.record_interaction(client_id_or_name, "payment", f"Received payment of ${amount:.2f} via {source}", {"amount": amount, "source": source})
 
     def get_client(self, client_id_or_name: str) -> Optional[Client]:
@@ -222,7 +236,7 @@ class CRM:
             total_earned = 0.0
             for c in self._clients.values():
                 stages_count[c.stage] = stages_count.get(c.stage, 0) + 1
-                if c.stage in ("pitched", "in_discussion", "contract_sent"):
+                if c.stage != "churned":
                     pipeline_value += c.budget
                 total_earned += c.total_revenue
 
