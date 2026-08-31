@@ -233,7 +233,7 @@ class Gateway:
             key = text.lower()[:80]
             quiet = lvl < max(320.0, noise_floor * 2.2)
             if kind == "partial" and quiet and key == last_partial_key \
-                    and time.time() - last_partial_change >= 0.4:
+                    and time.time() - last_partial_change >= 0.3:
                 kind = "final"
             if key != last_partial_key:
                 last_partial_key = key

@@ -62,8 +62,16 @@ class OverlappedVoicePipeline:
         # Overlapped LLM streaming -> sentence chunking
         accumulated: list[str] = []
         try:
-            # Build trimmed voice context (last 3 messages + current)
+            # Build trimmed voice context (last 5 messages + current)
+            from .. import db
             msgs = [{"role": "system", "content": "You are EVO. Be concise, direct and natural. 1-3 sentences max."}]
+            try:
+                recent = db.recent_messages(limit=5)
+                for m in recent:
+                    if isinstance(m, dict) and "role" in m and "content" in m:
+                        msgs.append({"role": m["role"], "content": m["content"][:200]})
+            except Exception:
+                pass
             msgs.append({"role": "user", "content": text})
 
             stream_gen = llm.chat_stream(msgs, role="voice", timeout=15)

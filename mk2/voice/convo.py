@@ -35,7 +35,7 @@ def _should_finalize(kind: str, text: str, quiet: bool,
         return True
     key = text.lower()[:80]
     return (kind == "partial" and quiet and key == last_key
-            and now - last_change >= 0.4)
+            and now - last_change >= 0.3)
 
 
 EXIT_PHRASES = ("stop listening", "close the mic", "close mic", "goodbye")
@@ -47,7 +47,16 @@ class ConversationMode:
         self._thread: threading.Thread | None = None
         self.speaker = Speaker()
         from .barge_in import BargeInManager
-        self.barge_in_mgr = BargeInManager(on_interrupt=lambda: getattr(self.speaker, "shut_up", lambda: None)())
+        from .streaming import OverlappedVoicePipeline
+        self.pipeline = OverlappedVoicePipeline(on_barge_in=lambda: getattr(self.speaker, "shut_up", lambda: None)())
+        self.barge_in_mgr = BargeInManager(on_interrupt=lambda: self.stop_speech())
+
+    def stop_speech(self) -> None:
+        self.pipeline.interrupt()
+        try:
+            self.speaker.shut_up()
+        except Exception:
+            pass
 
     @property
     def running(self) -> bool:
@@ -56,7 +65,6 @@ class ConversationMode:
     def start(self) -> bool:
         if self.running:
             return False
-        tts_cancel = getattr(self.speaker, "shut_up", None)
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, daemon=True,
                                         name="mk2-convo")
@@ -66,10 +74,7 @@ class ConversationMode:
 
     def stop(self) -> None:
         self._stop.set()
-        try:
-            self.speaker.shut_up()
-        except Exception:
-            pass
+        self.stop_speech()
 
     # ---------------- ------------------------------------------------ loop
 
@@ -113,8 +118,9 @@ class ConversationMode:
                     continue
                 lvl = _rms(frame)
                 noise_floor = 0.9 * noise_floor + 0.1 * lvl
-                speaking = getattr(self.speaker, "is_speaking", False)
+                speaking = getattr(self.speaker, "is_speaking", False) or self.pipeline.is_active
                 self.barge_in_mgr.process_frame(frame, is_playing=speaking)
+                self.pipeline.feed_mic_frame(frame)
                 kind, text = s.feed(frame)
                 if not text:
                     continue
@@ -127,14 +133,15 @@ class ConversationMode:
                     if any(x in low for x in EXIT_PHRASES):
                         self.speaker.say("Closing conversation mode.")
                         break
-                    reply = brain.handle_turn(text, surface="voice")
-                    self.speaker.say(reply)
+                    # Use OverlappedVoicePipeline for sub-second streaming turn
+                    self.pipeline.process_utterance(text, surface="voice")
                     continue
                 key = text.lower()[:80]
                 if key != last_key:
                     last_key = key
                     last_change = now
         finally:
+            self.stop_speech()
             bus.publish("system.voice", {"state": "idle"})
 
 

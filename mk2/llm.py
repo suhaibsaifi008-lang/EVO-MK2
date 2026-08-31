@@ -216,7 +216,7 @@ def _providers(*args, **kwargs) -> list[dict]:
 
 def _role_model(role: str) -> str:
     if role == "voice":
-        return getattr(settings, "voice_model", "") or "claude-haiku-4-5-20251001"
+        return getattr(settings, "voice_model", "") or settings.fast_model or "claude-haiku-4-5-20251001"
     if role == "fast":
         return settings.fast_model or ""
     if role == "reasoning":

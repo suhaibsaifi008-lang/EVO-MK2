@@ -512,14 +512,34 @@ def handle_turn(
         "docs_create/fs_write/vault_write and tell them where it is.\n"
         "HONESTY & CAPABILITY RULES:\n"
         "- Be 100% honest about what you can and cannot do on this PC.\n"
-        "- You CAN: open apps/sites, search the live web with web_search, control Windows settings (volume, brightness, wifi, lock, sleep), set timers/reminders, read the screen, and create real documents/notes.\n"
-        "- You CANNOT: autonomously earn money, execute financial transactions, trade, send unapproved cold outreach, or run an autonomous business while the user sleeps.\n"
-        "- Never claim you are 'setting up autonomous outreach' or 'running a money-making engine' when you are not. If asked how to make money, provide honest, grounded advice on skills, freelancing, or real business steps the user can take, and offer to help research or write content.\n"
+        "- You CAN: open apps/sites, search the live web with web_search, control Windows settings (volume, brightness, wifi, lock, sleep), set timers/reminders, read the screen, create real documents/notes, manage CRM leads, draft proposals & invoices, and scan freelance opportunities.\n"
+        "- You CANNOT: execute unauthorized financial transfers or send unapproved spam outreach without user confirmation.\n"
+        "- When asked about making money or tracking revenue, actively reference live CRM data, client pipeline milestones, and suggest high-ROI freelance opportunities, proposals, or content assets.\n"
         "ACTION & PROMISES RULE:\n"
         "- NEVER say 'I'm digging into data', 'Give me a moment to check', or 'Let me research that' without calling a tool in that same step!\n"
         "- If research is needed, you MUST call {\"tool\": \"deep_research\", \"args\": {\"topic\": \"...\"}} or {\"tool\": \"web_search\", \"args\": {\"query\": \"...\"}}.\n"
         "- When deep_research is called, it automatically runs in the background and saves a real briefing to your vault."
     )
+
+    # Money & CRM Context Injection
+    money_keywords = ("money", "earn", "pipeline", "client", "proposal", "invoice", "revenue", "income", "leads", "upwork", "freelance")
+    if any(k in text.lower() for k in money_keywords):
+        try:
+            from .crm import get_crm
+            from .revenue import get_revenue_tracker
+            crm_pipe = get_crm().get_pipeline_summary()
+            funnel_stats = get_revenue_tracker().get_funnel_metrics(days=30)
+            crm_ctx = (
+                f"\nLIVE CRM & MONETIZATION CONTEXT:\n"
+                f"- 30-Day Revenue: ${funnel_stats.get('total_revenue', 0.0):,.2f} USD\n"
+                f"- Total Clients Tracked: {crm_pipe.get('total_clients', 0)}\n"
+                f"- Active Pipeline Value: ${crm_pipe.get('pipeline_value', 0.0):,.2f} USD (Pitched: {crm_pipe.get('stages', {}).get('pitched', 0)}, In Discussion: {crm_pipe.get('stages', {}).get('in_discussion', 0)}, Active: {crm_pipe.get('stages', {}).get('active', 0)})\n"
+                f"- Actively reference these real numbers, active client stages, and recommended next actions.\n"
+            )
+            system_extra += crm_ctx
+        except Exception:
+            pass
+
     messages[0]["content"] += system_extra
 
     answer = ""

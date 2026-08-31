@@ -125,7 +125,7 @@ class JarvisAgent:
             except Exception as exc:
                 log.debug("Proactive suggestion error: %s", exc)
 
-        # 5. Financial briefing (once per day)
+        # 5. Financial briefing & Money Briefing (once per day)
         if self._should_run_daily("financial_briefing"):
             try:
                 briefing = self.finance.financial_briefing()
@@ -133,6 +133,37 @@ class JarvisAgent:
                     findings.append(f"Financial briefing: {briefing[:100]}...")
             except Exception as exc:
                 log.debug("Daily financial briefing note: %s", exc)
+
+        if self._should_run_daily("money_briefing"):
+            try:
+                from .money_briefing import get_money_briefing_engine
+                m_brief = get_money_briefing_engine().generate_briefing()
+                if m_brief.get("top_actions"):
+                    findings.append(f"Daily Money Briefing: {len(m_brief['top_actions'])} high-ROI actions surfaced")
+            except Exception as exc:
+                log.debug("Daily money briefing note: %s", exc)
+
+        # 5b. Periodic Payment Scan (every 30 mins / 1800s)
+        now_ts = time.time()
+        if now_ts - getattr(self, "_last_payment_scan_ts", 0.0) >= 1800:
+            setattr(self, "_last_payment_scan_ts", now_ts)
+            try:
+                from .payments import get_payment_detector
+                payments = get_payment_detector().scan_all()
+                if payments:
+                    findings.append(f"Payment detected: {len(payments)} new payment(s) reconciled")
+            except Exception as exc:
+                log.debug("Periodic payment scan error: %s", exc)
+
+        # 5c. Client Follow-ups check
+        try:
+            from .followup_engine import get_followup_engine
+            followups = get_followup_engine().get_pending_followups()
+            if followups:
+                top_f = followups[0]
+                findings.append(f"Client Follow-up needed: {top_f.client_name} ({top_f.cadence})")
+        except Exception as exc:
+            log.debug("Follow-up check error: %s", exc)
 
         # 6. Self-improvement scan (once per day)
         if self._should_run_daily("self_improvement"):

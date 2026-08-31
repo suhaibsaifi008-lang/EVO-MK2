@@ -208,6 +208,12 @@ def health():
             voice_v2 = webrtc_v2.status()
     except Exception as exc:
         voice_v2 = {"available": False, "enabled": False, "error": str(exc)[:80]}
+    ttft_info = {}
+    try:
+        from .llm import get_ttft_stats
+        ttft_info = get_ttft_stats()
+    except Exception:
+        pass
     return {
         "ok": True,
         "name": config.settings.name,
@@ -216,6 +222,7 @@ def health():
         "tools": len(tools.manifest()),
         "voice": voice,
         "voice_v2": voice_v2,
+        "ttft": ttft_info,
         "version": "mk2-0.1",
     }
 

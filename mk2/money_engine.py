@@ -58,9 +58,14 @@ class MoneyEngine:
         self.queue = get_approval_queue()
         self.email = get_email_agent()
         self.upwork = UpworkAgent()
+        from .crm import get_crm
+        from .opportunity_scorer import get_opportunity_scorer
+        self.crm = get_crm()
+        self.scorer = get_opportunity_scorer()
         from .financial_intelligence import get_financial_intelligence
         self.finance = get_financial_intelligence()
         self.last_tick_ts = 0.0
+        self.last_payment_scan_ts = 0.0
 
     def start(self) -> bool:
         if self.running:
@@ -190,48 +195,40 @@ class MoneyEngine:
         return results
 
     def pick_best_opportunity(self, opportunities: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
-        """Use LLM reasoning to select the single highest-probability opportunity."""
+        """Use OpportunityScorer EV ranking + LLM validation to pick top opportunity."""
+        if not opportunities:
+            return None
         if len(opportunities) == 1:
             return opportunities[0]
 
-        summary_list = []
-        for i, op in enumerate(opportunities):
-            summary_list.append(f"[{i}] Platform: {op.get('platform')}, Title: {op.get('title')}, Budget: {op.get('budget', 'N/A')}")
-
-        prompt = (
-            "Select the single best freelance or outreach opportunity with the highest probability "
-            "of successful closing and payout within 7 days.\n\n"
-            + "\n".join(summary_list)
-            + '\n\nReturn ONLY JSON: {"pick": <index>, "reasoning": "<1 sentence>"}'
-        )
-
-        try:
-            reply = llm.chat([
-                {"role": "system", "content": "You are a freelance business strategist."},
-                {"role": "user", "content": prompt},
-            ], role="fast", temperature=0.2)
-            clean = reply.strip()
-            if clean.startswith("```"):
-                clean = clean.split("\n", 1)[-1].rsplit("```", 1)[0]
-            choice = json.loads(clean.strip())
-            idx = int(choice.get("pick", 0))
-            if 0 <= idx < len(opportunities):
-                return opportunities[idx]
-        except Exception as exc:
-            log.warning("LLM opportunity picker fallback: %s", exc)
+        # 1. Rank using OpportunityScorer
+        ranked = self.scorer.rank_opportunities(opportunities)
+        top_ranked = ranked[0]
+        # Match back to original dict
+        for op in opportunities:
+            if str(op.get("id", "")) == top_ranked.id or op.get("title") == top_ranked.title:
+                op["win_probability"] = top_ranked.win_probability
+                op["expected_value"] = top_ranked.expected_value
+                return op
 
         return opportunities[0]
 
     def execute_opportunity(self, opportunity: dict[str, Any]) -> dict[str, Any]:
-        """Execute the opportunity through the respective platform agent."""
+        """Execute the opportunity through the respective platform agent and record in CRM."""
         plat = opportunity.get("platform")
+        client_name = opportunity.get("client_name") or opportunity.get("client_id") or "Client"
+        budget = float(opportunity.get("bid", opportunity.get("budget", 150.0)))
+
         if plat == "upwork":
             v = self.upwork.submit_proposal(opportunity, user_approved=True)
-            self.funnel.record_stage("proposal_sent", "upwork", client=opportunity.get("client_id", ""), amount=float(opportunity.get("bid", 150.0)), meta={"gig": opportunity.get("title")})
+            self.funnel.record_stage("proposal_sent", "upwork", client=client_name, amount=budget, meta={"gig": opportunity.get("title")})
+            self.crm.add_or_update_client(name=client_name, platform="upwork", stage="pitched", budget=budget, notes=opportunity.get("title", ""))
+            self.crm.record_interaction(client_name, "proposal", f"Submitted Upwork proposal for {opportunity.get('title')}", {"budget": budget})
             return v.to_dict()
         elif plat == "email":
             # Draft and log
             self.funnel.record_stage("proposal_sent", "email", client=opportunity.get("from", ""), amount=0.0, meta={"subject": opportunity.get("title")})
+            self.crm.add_or_update_client(name=client_name, platform="email", stage="pitched", notes=opportunity.get("title", ""))
             return {"ok": True, "status": "reviewed"}
         return {"ok": False, "error": f"Unknown platform: {plat}"}
 

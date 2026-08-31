@@ -283,6 +283,13 @@ class UpworkAgent:
         self.known_clients.add(client_id)
         self.consent.record_outcome("proposal_submit", True, f"Submitted to {client_id} (${bid})")
 
+        try:
+            from ..crm import get_crm
+            get_crm().add_or_update_client(name=client_id, platform="upwork", stage="pitched", budget=bid, notes=gig.get("title", ""))
+            get_crm().record_interaction(client_id, "proposal", f"Upwork proposal submitted for '{gig.get('title')}' (${bid:.2f})", {"bid": bid, "gig_url": gig.get("url", "")})
+        except Exception as exc:
+            log.debug("CRM proposal record note: %s", exc)
+
         # Live browser automation if URL is present
         gig_url = gig.get("url")
         if gig_url and self.browser.browser:

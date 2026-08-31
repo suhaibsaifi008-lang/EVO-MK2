@@ -201,22 +201,29 @@ def _record_turn_safe(user: str, reply: str, surface: str) -> None:
 
 def _make_pipecat_recorder():
     """FrameProcessor capturing Transcription/Text frames via TurnRecorder."""
-    from pipecat.frames.frames import (EndFrame, StartInterruptionFrame,
+    from pipecat.frames.frames import (AudioRawFrame, EndFrame, StartInterruptionFrame,
         TextFrame, TranscriptionFrame)
     from pipecat.processors.frame_processor import FrameProcessor
+    from .barge_in import BargeInManager
 
     class _Recorder(FrameProcessor):
         def __init__(self) -> None:
             super().__init__()
             self.rec = TurnRecorder()
+            self.barge_in = BargeInManager(on_interrupt=lambda: self.rec.flush())
 
         async def process_frame(self, frame, direction):
             await super().process_frame(frame, direction)
-            if isinstance(frame, TranscriptionFrame):
+            if isinstance(frame, AudioRawFrame):
+                audio_bytes = getattr(frame, "audio", b"")
+                if audio_bytes:
+                    self.barge_in.process_frame(audio_bytes, is_playing=True)
+            elif isinstance(frame, TranscriptionFrame):
                 self.rec.note_user(getattr(frame, "text", ""))
             elif isinstance(frame, TextFrame):
                 self.rec.note_assistant(getattr(frame, "text", ""))
             elif isinstance(frame, (StartInterruptionFrame, EndFrame)):
+                self.barge_in.reset()
                 self.rec.flush()
             await self.push_frame(frame, direction)
 
