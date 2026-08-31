@@ -253,24 +253,43 @@ class SkillExtractor:
             return []
 
     def get_relevant_skills(self, context: str) -> list[dict[str, Any]]:
-        """Find skills relevant to current query or task."""
+        """Find skills relevant to current query or task using token overlap and difflib fuzzy matching."""
         relevant = []
         try:
-            ctx_tokens = set(re.findall(r"\w+", context.lower()))
+            import difflib
+            ctx_tokens = set(re.findall(r"\w{3,}", context.lower()))
             for f in self.skills_dir.glob("*.json"):
                 try:
                     skills_list = json.loads(f.read_text(encoding="utf-8"))
                     for skill in skills_list:
-                        topic_tokens = set(re.findall(r"\w+", skill.get("topic", "").lower()))
-                        proc_tokens = set(re.findall(r"\w+", skill.get("procedure", "").lower()))
-                        overlap = len(ctx_tokens & (topic_tokens | proc_tokens))
-                        if overlap > 0:
-                            relevant.append(skill)
+                        proc = skill.get("procedure", "").lower()
+                        topic = skill.get("topic", "").lower()
+                        combined_text = f"{topic} {proc}"
+                        skill_tokens = set(re.findall(r"\w{3,}", combined_text))
+
+                        # 1. Exact token overlap
+                        exact = len(ctx_tokens & skill_tokens)
+
+                        # 2. Fuzzy match: check if any context token is close to any skill token
+                        fuzzy = 0
+                        for ct in ctx_tokens:
+                            for st in skill_tokens:
+                                if len(ct) > 3 and len(st) > 3:
+                                    if difflib.SequenceMatcher(None, ct, st).ratio() > 0.8:
+                                        fuzzy += 1
+
+                        score = exact + fuzzy * 0.5
+                        if score > 0:
+                            entry = dict(skill)
+                            entry["_match_score"] = score
+                            relevant.append(entry)
                 except Exception:
                     pass
+            # Sort by match score descending
+            relevant.sort(key=lambda x: x.get("_match_score", 0), reverse=True)
         except Exception as exc:
             log.debug("Skill query note: %s", exc)
-        return relevant
+        return relevant[:5]
 
 
 _global_skill_extractor: Optional[SkillExtractor] = None

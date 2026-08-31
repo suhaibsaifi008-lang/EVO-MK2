@@ -87,6 +87,17 @@ class TestMemoryPolicy:
         assert "asus g14" in blob and "hello there" in blob
 
 
+class TestMoneyIntelligenceRoute:
+    def test_direct_analysis_question_calls_money_intelligence(self, monkeypatch):
+        class MockMoneyIntelligence:
+            def answer(self, q):
+                return "Your 30-day pipeline value is $5,000 with 3 active leads."
+
+        monkeypatch.setattr("mk2.money_intelligence.get_money_intelligence", lambda: MockMoneyIntelligence())
+        reply = brain.handle_turn("How's my business doing?")
+        assert "pipeline value is $5,000" in reply
+
+
 def memory_record(user_text, reply):
     # drive the real policy path without the rate-limit gate
     import mk2.memory as mem

@@ -382,6 +382,28 @@ def _is_complex_goal(text: str) -> bool:
     return any(k in t for k in keywords)
 
 
+def _is_money_analysis_question(text: str) -> bool:
+    """Return True if this is an analysis/recommendation question, not an action."""
+    analysis_indicators = (
+        "how am i doing", "how's my business", "what should i", "show me my",
+        "am i on track", "how much", "what's my", "my numbers", "my stats",
+        "overview", "briefing", "summary", "how's it going", "how is it going",
+        "what do you think", "recommend", "advice", "insight", "analysis",
+        "doing well", "doing bad", "improve", "better at",
+    )
+    action_indicators = (
+        "send", "create", "submit", "record", "add", "delete", "update",
+        "invoice", "proposal", "payment", "follow up", "contact",
+    )
+    lower = text.lower()
+    if any(a in lower for a in action_indicators):
+        return False
+    if any(a in lower for a in analysis_indicators):
+        return True
+    money_keywords = ("money", "earn", "pipeline", "client", "proposal", "invoice", "revenue", "income", "leads", "upwork", "freelance", "business", "pricing", "rate")
+    return any(k in lower for k in money_keywords) and "?" in text
+
+
 def handle_turn(
     text: str,
     surface: str = "console",
@@ -410,6 +432,23 @@ def handle_turn(
 
     t0 = time.time()
     db.trace(turn_id, "start", 0)
+
+    # Direct Money Analysis path via MoneyIntelligence.answer()
+    money_keywords = ("money", "earn", "pipeline", "client", "proposal", "invoice", "revenue", "income", "leads", "upwork", "freelance", "business", "pricing", "rate")
+    money_hit = any(k in text.lower() for k in money_keywords)
+    if money_hit and _is_money_analysis_question(text):
+        try:
+            from .money_intelligence import get_money_intelligence
+            reply = get_money_intelligence().answer(text)
+            if reply:
+                reply = reply.strip()
+                memory.record_turn(text, reply, surface)
+                emit({"type": "done", "text": reply})
+                if surface != "console":
+                    bus.publish("convo.turn", {"id": turn_id, "text": text, "reply": reply})
+                return reply
+        except Exception as exc:
+            log.warning("MoneyIntelligence answer fallback: %s", exc)
 
     try:
         from . import conversation
@@ -802,6 +841,14 @@ def handle_turn(
         except Exception:
             answer = ("I've processed your request. Let me know if you need any more details.")
 
+    answer_prefix = ""
+    uncertainty_patterns = ("i don't know", "i'm not sure", "i am not sure", "i have no information", "not familiar with")
+    if any(p in answer.lower() for p in uncertainty_patterns) and len(text) > 10:
+        answer_prefix = "I didn't have a great answer for that — I'm researching it now. "
+
+    if answer_prefix and not answer.startswith(answer_prefix):
+        answer = f"{answer_prefix}{answer}"
+
     emit({"type": "done", "text": answer})
     db.trace(turn_id, "total_agent", (time.time() - t0) * 1000, f"steps={step + 1}")
     if surface != "console":  # console renders locally
@@ -819,12 +866,16 @@ def handle_turn(
             conversation.record_turn_completion(text, answer)
         except Exception:
             pass
-        # Autonomous learning trigger on uncertainty
+        # Autonomous learning trigger on uncertainty (runs in daemon thread)
         uncertainty_patterns = ("i don't know", "i'm not sure", "i am not sure", "i have no information", "not familiar with")
         if any(p in answer.lower() for p in uncertainty_patterns) and len(text) > 10:
             try:
-                from .research_tools import deep_research
-                deep_research(text)
+                import threading
+                threading.Thread(
+                    target=lambda: __import__("mk2.research_tools", fromlist=["deep_research"]).deep_research(text),
+                    daemon=True,
+                    name="mk2-auto-research"
+                ).start()
             except Exception:
                 pass
         try:

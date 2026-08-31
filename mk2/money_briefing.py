@@ -100,6 +100,15 @@ class MoneyBriefingEngine:
             "top_actions": actions[:3],
         })
 
+        if actions:
+            urgent_actions = [a for a in actions if any(k in a.lower() for k in ("overdue", "payment", "urgent", "due today", "reminder", "due"))]
+            if urgent_actions:
+                bus.publish("notify.out", {
+                    "kind": "money_briefing",
+                    "text": f"Money Briefing: {urgent_actions[0][:120]}",
+                    "priority": "high",
+                })
+
         return {
             "ok": True,
             "timestamp": time.time(),

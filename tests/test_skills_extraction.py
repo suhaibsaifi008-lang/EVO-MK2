@@ -50,6 +50,17 @@ def test_skills_disk_persistence(tmp_path, monkeypatch):
     assert "Red, Green, Refactor" in relevant[0]["procedure"]
 
 
+def test_fuzzy_skill_matching(extractor_instance, monkeypatch):
+    mock_llm_response = "1. Build responsive user interfaces with flexbox and grid layouts."
+    monkeypatch.setattr("mk2.llm.chat", lambda messages, **kw: mock_llm_response)
+    extractor_instance.extract_from_research("Frontend Web Development", "UI layout guide.")
+
+    # "building web applications" has fuzzy similarity to "build", "web", "layout"
+    relevant = extractor_instance.get_relevant_skills("building web applications with modern layouts")
+    assert len(relevant) >= 1
+    assert "responsive user interfaces" in relevant[0]["procedure"]
+
+
 def test_get_skill_extractor_singleton():
     e1 = get_skill_extractor()
     e2 = get_skill_extractor()

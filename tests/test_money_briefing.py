@@ -62,6 +62,14 @@ def test_bus_event_emission(briefing_instance):
     assert "top_actions" in events[0].payload
 
 
+def test_notify_out_published_on_urgent_items(briefing_instance):
+    notifications = []
+    bus.subscribe("notify.out", lambda e: notifications.append(e))
+    briefing_instance.invoicing.create_invoice("Overdue Client", [{"description": "Dev", "quantity": 1, "unit_price": 5000.0}])
+    briefing_instance.generate_briefing()
+    assert any(n.payload.get("kind") == "money_briefing" for n in notifications)
+
+
 def test_hot_leads_inclusion_in_actions(briefing_instance):
     briefing_instance.crm.add_or_update_client("Hot Prospect", budget=8500.0, stage="pitched")
     res = briefing_instance.generate_briefing()
