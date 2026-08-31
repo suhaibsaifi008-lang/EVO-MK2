@@ -69,6 +69,7 @@ class InvoicingEngine:
 
     def _save(self) -> None:
         try:
+            INVOICES_DB.parent.mkdir(parents=True, exist_ok=True)
             data = {k: asdict(v) for k, v in self._invoices.items()}
             INVOICES_DB.write_text(json.dumps(data, indent=2), encoding="utf-8")
         except Exception as exc:

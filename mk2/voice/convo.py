@@ -155,6 +155,7 @@ class ConversationMode:
                         break
                     if not processing:
                         processing = True
+                        s = stt_mod.Stream()
                         threading.Thread(target=_process, args=(text,), daemon=True, name="mk2-voice-worker").start()
                     continue
                 key = text.lower()[:80]

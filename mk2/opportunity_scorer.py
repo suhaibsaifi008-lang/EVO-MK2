@@ -56,6 +56,7 @@ class OpportunityScorer:
 
     def _save(self) -> None:
         try:
+            MODEL_FILE.parent.mkdir(parents=True, exist_ok=True)
             MODEL_FILE.write_text(json.dumps({"weights": self.weights, "outcomes": self.outcomes[-100:]}, indent=2), encoding="utf-8")
         except Exception as exc:
             log.warning("Failed to save opportunity model: %s", exc)

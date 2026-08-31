@@ -51,10 +51,12 @@ def _on_notify(event_or_topic: Any, payload: dict[str, Any] | None = None) -> No
         p = event_or_topic.payload
     else:
         p = payload or {}
+    kind = str(p.get("kind", "notification")).lower()
+    if kind in ("money_briefing", "finance", "telemetry", "internal"):
+        return
     text = str(p.get("text", p.get("speech", ""))).strip()
     if not text:
         return
-    kind = str(p.get("kind", "notification"))
     urgency = str(p.get("urgency", "medium"))
     title = f"EVO [{kind.capitalize()}]" if kind != "notification" else "EVO Assistant"
     show_toast(title, text, urgency)

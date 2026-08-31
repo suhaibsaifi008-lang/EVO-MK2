@@ -140,22 +140,6 @@ class JarvisAgent:
                 m_brief = get_money_briefing_engine().generate_briefing()
                 if m_brief.get("top_actions"):
                     findings.append(f"Daily Money Briefing: {len(m_brief['top_actions'])} high-ROI actions surfaced")
-                    urgent = [a for a in m_brief["top_actions"] if any(
-                        k in a.lower() for k in ("overdue", "payment", "urgent", "due today", "reminder")
-                    )]
-                    if urgent:
-                        bus.publish("notify.out", {
-                            "kind": "money_briefing",
-                            "text": f"Money briefing: {len(urgent)} urgent items. {urgent[0][:100]}",
-                            "priority": "high",
-                        })
-                    else:
-                        top_act = m_brief["top_actions"][0]
-                        bus.publish("notify.out", {
-                            "kind": "money_briefing",
-                            "text": f"Daily Money Briefing: {top_act[:100]}",
-                            "priority": "normal",
-                        })
             except Exception as exc:
                 log.debug("Daily money briefing note: %s", exc)
 
