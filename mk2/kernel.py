@@ -89,7 +89,12 @@ async def _server_subsystem() -> None:
     ucfg = uvicorn.Config(app, host=settings.host, port=settings.port,
                           log_level="warning", lifespan="off")
     server = uvicorn.Server(ucfg)
-    await server.serve()
+    try:
+        await server.serve()
+    except (OSError, SystemExit) as exc:
+        log.warning("Server port %d bind delay: %s. Retrying in 2s...", settings.port, exc)
+        await asyncio.sleep(2)
+        raise exc
 
 
 async def _voice_subsystem() -> None:

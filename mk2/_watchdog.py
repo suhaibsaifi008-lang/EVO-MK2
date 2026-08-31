@@ -85,7 +85,7 @@ class Watchdog:
             except asyncio.CancelledError:
                 log.info("subsystem %s cancelled", sub.name)
                 return
-            except Exception as exc:  # noqa: BLE001
+            except (Exception, SystemExit) as exc:  # noqa: BLE001
                 sub.restarts += 1
                 sub.backoff = min(
                     _WATCHDOG_BACKOFF_BASE * (2 ** (sub.restarts - 1)),
