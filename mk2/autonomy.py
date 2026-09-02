@@ -524,8 +524,24 @@ class AutonomousRunner:
                         }),
                     )
                     self.missions[m.id] = m
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning("Autonomy state file %s corrupt: %s. Attempting backup restore.", GOALS_FILE, exc)
+                bak = GOALS_FILE.with_suffix(".bak")
+                if bak.exists():
+                    try:
+                        raw_bak = json.loads(bak.read_text(encoding="utf-8"))
+                        for m_data in raw_bak.get("missions", []):
+                            m_id = m_data.get("id", "")
+                            if m_id:
+                                self.missions[m_id] = Mission(
+                                    id=m_id,
+                                    goal=m_data.get("goal", ""),
+                                    subtasks=[],
+                                    status=m_data.get("status", "planning"),
+                                )
+                        log.info("Restored %d missions from backup", len(self.missions))
+                    except Exception as b_exc:
+                        log.warning("Backup restore also failed: %s", b_exc)
 
     def _save_state(self) -> None:
         with self._lock:
@@ -560,6 +576,12 @@ class AutonomousRunner:
                 GOALS_FILE.parent.mkdir(parents=True, exist_ok=True)
                 tmp_file = GOALS_FILE.with_suffix(".tmp")
                 tmp_file.write_text(json.dumps(out, indent=2), encoding="utf-8")
+                bak_file = GOALS_FILE.with_suffix(".bak")
+                if GOALS_FILE.exists():
+                    try:
+                        shutil.copy2(GOALS_FILE, bak_file)
+                    except Exception:
+                        pass
                 tmp_file.replace(GOALS_FILE)
             except Exception as exc:
                 log.warning("Autonomy _save_state failed: %s", exc)
@@ -579,10 +601,10 @@ class AutonomousRunner:
                 {"role": "user", "content": prompt}
             ], temperature=0.1, timeout=12, role="fast")
             data = json.loads(raw)
-            return {"closer": bool(data.get("closer", True)), "assessment": data.get("assessment", "")}
+            return {"closer": bool(data.get("closer", False)), "assessment": data.get("assessment", "")}
         except Exception as exc:
             log.warning("Progress verification LLM failed: %s", exc)
-            tool_ok = bool(result.get("ok", True))
+            tool_ok = bool(result.get("ok", False))
             return {"closer": tool_ok, "assessment": "Heuristic fallback based on execution outcome"}
 
     def _replan(self, mission: Mission, failed_subtask: SubTask, reason: str) -> list[dict] | None:
@@ -638,6 +660,13 @@ class AutonomousRunner:
                 log.warning("Swarm delegation failed, falling back to sequential: %s", exc)
 
         with self._lock:
+            running_count = sum(1 for m in self.missions.values() if m.status == "in_progress")
+            if running_count >= 5:
+                return {
+                    "ok": False,
+                    "speech": "Concurrent mission limit reached (5 active missions). Please wait for ongoing tasks to complete.",
+                    "data": {"running_count": running_count},
+                }
             self.missions[mission.id] = mission
             self._save_state()
 

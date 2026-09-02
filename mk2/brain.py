@@ -710,7 +710,9 @@ def handle_turn(
                     "rm -rf", "del /s", "del /f", "format ", "format.", "shutdown", "reboot",
                     "restart-computer", "stop-computer", "net user", "net localgroup",
                     "remove-item -recurse", "remove-item", "reg delete", "reg add",
-                    "diskpart", "bcdedit", "taskkill /f /im lsass", "taskkill /f /im csrss"
+                    "diskpart", "bcdedit", "taskkill /f /im lsass", "taskkill /f /im csrss",
+                    "invoke-expression", "iex ", "iex(", "downloadstring", "downloadfile",
+                    "-encodedcommand", "-enc ", "certutil", "bitsadmin", "curl -o", "wget -o",
                 )
                 if any(b in cmd for b in blocked_shell):
                     fail_streak += 1

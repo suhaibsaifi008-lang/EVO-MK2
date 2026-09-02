@@ -234,10 +234,11 @@ def shell_run(command: str, timeout: int = 20) -> dict:
         "bcdedit", "diskpart",
         "taskkill /f /im lsass", "taskkill /f /im csrss",
         "invoke-expression", "iex ", "iex(", "downloadstring", "downloadfile",
-        "-encodedcommand", "-enc ",
+        "-encodedcommand", "-enc ", "certutil", "bitsadmin", "curl -o", "wget -o",
+        "powershell -e", "pwsh -e", "start-bitstransfer",
     )
     if any(d in cmd_low for d in blocked):
-        return {"ok": False, "speech": "Command blocked: destructive system command detected.", "data": {}}
+        return {"ok": False, "speech": "Command blocked: destructive or suspicious system command detected.", "data": {}}
     out = _run_ps(command, timeout=max(5, min(int(timeout), 120)))
     return {"ok": True, "speech": out[:300] or "(no output)", "data": {"output": out[:4000]}}
 

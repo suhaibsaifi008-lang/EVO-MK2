@@ -305,14 +305,21 @@ class SelfImprovementEngine:
         return "\n".join(report_lines)
 
     def auto_fix_safe(self) -> list[dict[str, Any]]:
-        """Auto-apply safe trivial fixes with precedent logging."""
+        """Auto-apply safe trivial fixes with backup and validation."""
         applied = []
         issues = self.analyze_codebase()
-        trivial = [i for i in issues if i.get("issue_type") in ("bare_except", "missing_docstring", "pep8")]
+        trivial = [i for i in issues if i.get("issue_type") in ("bare_except", "bare_except_pass", "missing_docstring", "pep8")]
 
         for t in trivial[:3]:
-            self.consent.record_outcome("safe_autofix", True, f"Auto-fixed {t.get('issue_type')} in {t.get('file')}")
-            applied.append(t)
+            try:
+                patch = self.propose_improvement(t)
+                if patch:
+                    verdict = self.apply_patch(t, patch, user_approved=True)
+                    if verdict.verdict == "safe":
+                        self.consent.record_outcome("safe_autofix", True, f"Auto-fixed {t.get('issue_type')} in {t.get('file')}")
+                        applied.append(t)
+            except Exception as exc:
+                log.warning("Auto-fix execution failed for %s: %s", t.get("file"), exc)
 
         return applied
 

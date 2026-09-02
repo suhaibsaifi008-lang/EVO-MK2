@@ -848,6 +848,8 @@ async def transcribe(request: Request) -> dict:
     data = await request.body()
     if len(data) < 100:
         raise HTTPException(status_code=400, detail="no audio")
+    if len(data) > 10 * 1024 * 1024:  # 10MB maximum payload limit
+        raise HTTPException(status_code=413, detail="audio payload too large (max 10MB)")
     from .voice import stt as mkstt
 
     def work() -> str:
