@@ -113,10 +113,10 @@ class MoneyEngine:
                 self.audit.log_action({"type": "engine_error", "error": str(exc)}, outcome={"ok": False})
 
             # Sleep in responsive increments without overshoot or infinite loops
-            target = max(1.0, float(self.tick_interval))
+            target = max(0.1, float(self.tick_interval)) if self.tick_interval > 0 else 1.0
             slept = 0.0
             while self.running and slept < target:
-                step = min(1.0, target - slept)
+                step = min(0.5, target - slept)
                 time.sleep(step)
                 slept += step
 

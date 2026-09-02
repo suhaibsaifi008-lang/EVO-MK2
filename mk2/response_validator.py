@@ -44,7 +44,7 @@ def validate_response(text: str, timeout: float = 4.0, check_cancel = None) -> T
     prompt = (
         f"Original text:\n{t}\n\n"
         f"Violations detected: {', '.join(violations)}\n\n"
-        "Rewrite this response to sound like JARVIS:\n"
+        "Rewrite this response to sound like EVO:\n"
         "- Direct, concise, confident, and natural.\n"
         "- NEVER mention being an AI or language model.\n"
         "- NEVER mention model names or corporate disclaimers.\n"
@@ -53,7 +53,7 @@ def validate_response(text: str, timeout: float = 4.0, check_cancel = None) -> T
 
     try:
         fixed = llm.chat([
-            {"role": "system", "content": "You are a persona editor transforming assistant replies into crisp JARVIS dialogue."},
+            {"role": "system", "content": "You are a persona editor transforming assistant replies into crisp EVO dialogue."},
             {"role": "user", "content": prompt},
         ], role="fast", temperature=0.2, timeout=timeout)
 

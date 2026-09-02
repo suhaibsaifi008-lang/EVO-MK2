@@ -67,7 +67,21 @@ def manifest() -> list[dict]:
         ]
 
 
-_SENSITIVE = ("value", "password", "token", "secret", "api_key")
+def is_long_running(name: str) -> bool:
+    """Check whether a tool is declared as long-running without stale snapshots."""
+    with _lock:
+        t = _REGISTRY.get(name)
+        return bool(t and t.long_running)
+
+
+def is_allowed(name: str) -> bool:
+    """Check whether a tool name is registered in the tool manifest."""
+    ensure_loaded()
+    with _lock:
+        return name in _REGISTRY
+
+
+_SENSITIVE = ("value", "password", "token", "secret", "api_key", "pin", "credential", "auth", "private_key")
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
 

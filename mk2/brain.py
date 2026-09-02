@@ -423,13 +423,15 @@ def handle_turn(
     t0 = time.time()
     db.trace(turn_id, "start", 0)
 
+    turn_record_lock = threading.Lock()
     turn_recorded = False
 
     def _record_turn_once(u_text: str, a_text: str, surf: str) -> None:
         nonlocal turn_recorded
-        if turn_recorded:
-            return
-        turn_recorded = True
+        with turn_record_lock:
+            if turn_recorded:
+                return
+            turn_recorded = True
         memory.record_turn(u_text, a_text, surf)
 
     try:
@@ -444,8 +446,8 @@ def handle_turn(
             return immediate
         if flow_res.get("transformed_text"):
             text = flow_res["transformed_text"]
-    except Exception:
-        pass
+    except Exception as exc:
+        log.warning("Turn intent evaluation note: %s", exc)
 
     # Fast-lane: obvious commands execute instantly, zero model calls.
     from .fastlane import fast_command
@@ -464,8 +466,8 @@ def handle_turn(
         corr = conversation.detect_correction(text)
         if corr and corr != text:
             db.remember_fact(f"correction:{int(time.time())}", f"User clarified: {corr}", source="correction")
-    except Exception:
-        pass
+    except Exception as exc:
+        log.warning("Correction detection note: %s", exc)
 
     if not _is_online():
         off = _handle_offline(text)
@@ -684,6 +686,12 @@ def handle_turn(
                     break
                 continue
 
+            # Tool name allowlist (B5)
+            if not tools.is_allowed(name):
+                fail_streak += 1
+                messages.append({"role": "user", "content": f"TOOL RESULT ({name}): FAILED - Tool '{name}' is not recognized or permitted."})
+                continue
+
             if name == "shell_run":
                 cmd = str(args.get("command", "")).lower()
                 blocked_shell = (
@@ -697,7 +705,7 @@ def handle_turn(
                     messages.append({"role": "user", "content": f"TOOL RESULT ({name}): FAILED - Blocked command pattern detected."})
                     continue
 
-            # Robust path traversal check (H3)
+            # Robust path traversal check with non-traversal false-positive protection (M2)
             def _has_path_traversal(val: str) -> bool:
                 import urllib.parse
                 import unicodedata
@@ -705,7 +713,8 @@ def handle_turn(
                 decoded = urllib.parse.unquote(urllib.parse.unquote(raw_str))
                 normalized = unicodedata.normalize("NFKD", decoded)
                 low = normalized.lower().replace("\\", "/")
-                if any(p in low for p in ("../", "/..", "..", "%2e", "%2f", "%5c", "...")):
+                # Check for directory traversal sequences (../, /.., or standalone ..)
+                if re.search(r"(?:^|/)\.\.(?:/|$)", low) or "%2e%2e" in low or "%2f" in low or "%5c" in low:
                     return True
                 return False
 
@@ -716,9 +725,10 @@ def handle_turn(
 
             # Long-running tools become background jobs: reply instantly,
             # stream progress, announce the result when done.
-            manifest_by_name = {t["name"]: t for t in manifest}
-            if manifest_by_name.get(name, {}).get("long_running"):
-                def _bg_run(bg_args=args):
+            if tools.is_long_running(name):
+                bg_args_copy = dict(args)
+
+                def _bg_run(bg_args=bg_args_copy):
                     try:
                         tools.set_emitter(None)
                         result_bg = _timed_tool_call(name, bg_args, timeout_sec=15.0)

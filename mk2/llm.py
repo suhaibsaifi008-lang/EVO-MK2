@@ -427,26 +427,39 @@ def _offline_parse(text: str) -> str | None:
 
 	if t in ("time", "the time", "what time", "whats the time",
 	"what is the time", "what time is it", "current time"):
-		return datetime.now().strftime("It is %H:%M.")
+		return datetime.now().strftime("It is %H:%M")
 	if t in ("date", "today", "todays date", "what is the date",
 	"whats the date", "what day is it", "what is today"):
 		return datetime.now().strftime("Today is %A, %d %B %Y.")
 
-	m = re.search(r"what is\s+([\d\s+\-*/^%.]+)", t)
-	if m:
-		expr = m.group(1).strip()
+	def _safe_eval_math(expr_str: str):
+		import ast
+		clean = expr_str.strip().replace("^", "**")
+		if not re.fullmatch(r"[\d\s+\-*/%.()]+", clean):
+			return None
 		try:
-			result = eval(expr, {"__builtins__": {}}, {})
-			return f"{expr} equals {result}."
+			tree = ast.parse(clean, mode="eval")
+			_SAFE = (ast.Constant, ast.BinOp, ast.UnaryOp, ast.Expression)
+			_OPS = (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Mod, ast.Pow, ast.USub, ast.UAdd, ast.FloorDiv)
+			for node in ast.walk(tree):
+				if not isinstance(node, _SAFE + _OPS):
+					return None
+			return eval(compile(tree, "<math>", "eval"), {"__builtins__": {}}, {})
 		except Exception:
-			pass
-	m = re.search(r"^([\d]+\s*[\+\-\*/]\s*[\d]+)\s*$", t)
+			return None
+
+	m = re.search(r"what is\s+([\d\s+\-*/^%.()]+)", t)
 	if m:
-		try:
-			result = eval(m.group(1), {"__builtins__": {}}, {})
-			return f"That equals {result}."
-		except Exception:
-			pass
+		raw_expr = m.group(1).strip()
+		res = _safe_eval_math(raw_expr)
+		if res is not None:
+			return f"{raw_expr} equals {res}."
+	m = re.search(r"^([\d]+\s*[\+\-\*/^%]\s*[\d]+)\s*$", t)
+	if m:
+		raw_expr = m.group(1).strip()
+		res = _safe_eval_math(raw_expr)
+		if res is not None:
+			return f"That equals {res}."
 
 	if re.search(r"\bwho are you\b|\bwhat are you\b|\byour name\b", t):
 		return ("I'm EVO. Language service is offline but I can handle "

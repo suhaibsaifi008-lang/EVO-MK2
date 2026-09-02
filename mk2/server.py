@@ -331,9 +331,32 @@ def get_status_endpoint() -> dict:
     }
 
 
+def _verify_sync_auth(request: Request) -> None:
+    """Verify authorization via API key or an approved device pairing code."""
+    api_key = _resolve_api_key()
+    provided_key = (
+        request.headers.get("x-api-key", "")
+        or request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+    )
+    if api_key:
+        if provided_key == api_key:
+            return
+        # Check for approved pairing code
+        pair_code = request.headers.get("x-pair-code") or request.headers.get("x-pairing-code")
+        if pair_code and _pairing_codes.get(pair_code, {}).get("approved"):
+            return
+        raise HTTPException(status_code=401, detail="Unauthorized: invalid API key or pairing code.")
+
+    # When no system API key is configured, verify pairing code if provided
+    pair_code = request.headers.get("x-pair-code") or request.headers.get("x-pairing-code")
+    if pair_code and not _pairing_codes.get(pair_code, {}).get("approved"):
+        raise HTTPException(status_code=401, detail="Unauthorized: invalid pairing code.")
+
+
 @app.get("/api/session/state")
-def get_session_state_endpoint() -> dict:
+def get_session_state_endpoint(request: Request) -> dict:
     """Return compact conversational & memory state for cross-device handoff."""
+    _verify_sync_auth(request)
     from . import user_profile, autonomy
     return {
         "ok": True,
@@ -346,26 +369,6 @@ def get_session_state_endpoint() -> dict:
             if getattr(m, "status", "") in ("running", "planning")
         ],
     }
-
-
-def _verify_sync_auth(request: Request) -> None:
-    """Verify authorization via API key or an approved device pairing code."""
-    api_key = _resolve_api_key()
-    provided_key = (
-        request.headers.get("x-api-key", "")
-        or request.headers.get("authorization", "").removeprefix("Bearer ").strip()
-    )
-    if api_key:
-        if provided_key == api_key:
-            return
-        raise HTTPException(status_code=401, detail="Unauthorized: invalid API key.")
-
-    # Check for approved pairing code
-    pair_code = request.headers.get("x-pair-code") or request.headers.get("x-pairing-code")
-    if pair_code and _pairing_codes.get(pair_code, {}).get("approved"):
-        return
-
-    raise HTTPException(status_code=401, detail="Unauthorized: device synchronization requires API key or approved pairing code.")
 
 
 class SessionImportIn(BaseModel):
@@ -999,45 +1002,48 @@ def get_autonomy_health():
     }
 
 
-def _check_finance_consent() -> None:
-    """Ensure client has consent to access sensitive financial data."""
+def _check_finance_consent(tier: str = "read") -> None:
+    """Ensure client has consent to access sensitive financial data with granular tier controls."""
     from .consent import get_consent_manager
     cm = get_consent_manager()
-    if cm.get_level() == "none":
+    lvl = cm.get_level()
+    if lvl == "none":
         raise HTTPException(status_code=403, detail="Consent denied: financial access is disabled.")
+    if tier == "sensitive" and lvl in ("none", "read"):
+        raise HTTPException(status_code=403, detail="Consent denied: sensitive client data requires assist or higher consent tier.")
 
 
 @app.get("/api/money/briefing")
 def get_money_briefing_endpoint():
-    _check_finance_consent()
+    _check_finance_consent("read")
     from .financial_intelligence import get_financial_intelligence
     return {"ok": True, "briefing": get_financial_intelligence().financial_briefing()}
 
 
 @app.get("/api/money/pipeline")
 def get_money_pipeline_endpoint(days: int = 30):
-    _check_finance_consent()
+    _check_finance_consent("read")
     from .money_engine import get_money_engine
     return {"ok": True, "pipeline": get_money_engine().get_funnel_metrics(days)}
 
 
 @app.get("/api/money/clients")
 def get_money_clients_endpoint():
-    _check_finance_consent()
+    _check_finance_consent("sensitive")
     from .revenue import get_revenue_tracker
     return {"ok": True, "stats": get_revenue_tracker().get_stats(30)}
 
 
 @app.get("/api/money/opportunities")
 def get_money_opportunities_endpoint():
-    _check_finance_consent()
+    _check_finance_consent("read")
     from .money_engine import get_money_engine
     return {"ok": True, "opportunities": get_money_engine().scan_opportunities()}
 
 
 @app.get("/api/money/followup")
 def get_money_followup_endpoint():
-    _check_finance_consent()
+    _check_finance_consent("read")
     from .money_engine import get_money_engine
     return {"ok": True, "followups": get_money_engine().finance.diversification_suggestions([])}
 

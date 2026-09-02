@@ -267,7 +267,7 @@ def synthesize_results(goal: str, plan: Plan) -> str:
         f"Execution Findings:\n{context}\n\n"
         "Synthesize these findings into a direct, conversational, and comprehensive answer for the user.\n"
         "Rules:\n"
-        "- Speak naturally like JARVIS: crisp, direct, confident.\n"
+        "- Speak naturally like EVO: crisp, direct, confident.\n"
         "- Do NOT list internal tool names or step numbers.\n"
         "- Present the actual solution, answer, or deliverable clearly.\n"
     )
@@ -383,7 +383,7 @@ def execute_plan(
 
 
 REFLECT_SYSTEM = (
-    "You are a self-check reviewer for JARVIS. Review this answer for: "
+    "You are a self-check reviewer for EVO. Review this answer for: "
     "1) Does it directly answer the question? "
     "2) Are there hallucinations or ungrounded claims? "
     "3) Does it violate persona rules (NO 'As an AI', NO capability lists, NO corporate disclaimers)? "

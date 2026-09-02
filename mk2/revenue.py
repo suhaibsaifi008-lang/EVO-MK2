@@ -131,14 +131,19 @@ class RevenueTracker:
                         st = str(r["status"] or "")
                         amt = float(r["amount"] or 0.0)
 
+                        stage_matched = None
                         if act in stages:
-                            stages[act] += 1
+                            stage_matched = act
                         elif st in stages:
-                            stages[st] += 1
+                            stage_matched = st
 
-                        if st == "paid" or act == "payment_received":
+                        if stage_matched:
+                            stages[stage_matched] += 1
+
+                        if st == "paid" or act in ("paid", "payment_received"):
                             total_value += amt
-                            stages["paid"] = stages.get("paid", 0) + 1
+                            if stage_matched != "paid":
+                                stages["paid"] = stages.get("paid", 0) + 1
         except Exception as exc:
             log.warning("Failed querying funnel metrics: %s", exc)
 
