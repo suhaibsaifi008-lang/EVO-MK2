@@ -23,20 +23,22 @@ _synthesized_tools_meta: dict[str, dict] = {}
 
 
 def _validate_code_ast(code: str, expected_func_name: str) -> tuple[bool, str]:
-    """Validate Python syntax and check basic security boundaries."""
+    """Validate Python syntax and check full security boundaries using skills audit."""
     try:
         tree = ast.parse(code)
     except SyntaxError as e:
         return False, f"Syntax error at line {e.lineno}: {e.msg}"
 
+    from . import skills
+    try:
+        skills.audit_code(code)
+    except ValueError as ve:
+        return False, f"Security audit rejected synthesized tool: {ve}"
+
     found_func = False
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == expected_func_name:
             found_func = True
-        # Prevent obfuscated execution patterns
-        if isinstance(node, ast.Call):
-            if isinstance(node.func, ast.Name) and node.func.id in ("eval", "exec"):
-                return False, f"Prohibited dynamic evaluation primitive: '{node.func.id}'"
 
     if not found_func:
         return False, f"Function '{expected_func_name}' was not found in the synthesized code."

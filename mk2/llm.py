@@ -264,8 +264,24 @@ def _completion(base: str, key: str, payload: dict, timeout: int = 60) -> dict:
         base.rstrip("/") + "/chat/completions",
         data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as he:
+        body = ""
+        try:
+            body = he.read().decode("utf-8", errors="replace")[:200]
+        except Exception:
+            pass
+        if he.code == 401:
+            raise RuntimeError(f"HTTP 401 Unauthorized from {base}: check API key. {body}") from he
+        elif he.code == 429:
+            raise RuntimeError(f"HTTP 429 Rate limited from {base}: {body}") from he
+        elif he.code >= 500:
+            raise RuntimeError(f"HTTP {he.code} Provider server error from {base}: {body}") from he
+        raise RuntimeError(f"HTTP {he.code} Error from {base}: {body}") from he
+    except urllib.error.URLError as ue:
+        raise RuntimeError(f"Network error connecting to {base}: {ue.reason}") from ue
 
 
 def _deadline_iter(iterator, first_timeout: float = 20.0, gap_timeout: float = 25.0):

@@ -14,19 +14,23 @@ log = logging.getLogger("mk2.notifications")
 
 
 def show_toast(title: str, message: str, urgency: str = "medium") -> bool:
-    """Display a native Windows toast notification using PowerShell WinRT."""
-    # Sanitize strings to avoid PowerShell escaping issues
-    clean_title = (title or "EVO").replace('"', "'").replace("\n", " ")[:64]
-    clean_msg = (message or "").replace('"', "'").replace("\n", " ")[:256]
+    """Display a native Windows toast notification using PowerShell WinRT with injection-proof encoding."""
+    import base64
+    safe_title = (title or "EVO")[:64]
+    safe_msg = (message or "")[:256]
+    b64_title = base64.b64encode(safe_title.encode("utf-8")).decode("ascii")
+    b64_msg = base64.b64encode(safe_msg.encode("utf-8")).decode("ascii")
 
-    # Windows Notification XML via PowerShell
+    # Windows Notification XML via PowerShell using safe Base64 decoding
     ps_cmd = f"""
 [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null
 $template = [Windows.UI.Notifications.ToastTemplateType]::ToastText02
 $xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent($template)
+$title = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{b64_title}'))
+$msg = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{b64_msg}'))
 $elements = $xml.GetElementsByTagName("text")
-$elements.Item(0).AppendChild($xml.CreateTextNode("{clean_title}")) > $null
-$elements.Item(1).AppendChild($xml.CreateTextNode("{clean_msg}")) > $null
+$elements.Item(0).AppendChild($xml.CreateTextNode($title)) > $null
+$elements.Item(1).AppendChild($xml.CreateTextNode($msg)) > $null
 $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
 [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("EVO Assistant").Show($toast)
 """

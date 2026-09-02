@@ -292,11 +292,28 @@ class AuthPinIn(BaseModel):
     pin: str
 
 
+_pin_lockout_until = 0.0
+_pin_failures = 0
+
+
 @app.post("/api/auth/pin")
 def auth_pin_endpoint(body: AuthPinIn) -> dict:
+    global _pin_lockout_until, _pin_failures
+    now = time.time()
+    if now < _pin_lockout_until:
+        rem = int(_pin_lockout_until - now)
+        raise HTTPException(status_code=429, detail=f"Too many failed PIN attempts. Locked out for {rem}s.")
+
     from .security import voiceprint
     if voiceprint.verify_pin(body.pin):
+        _pin_failures = 0
         return {"ok": True, "message": "Authentication successful. Security lock cleared."}
+
+    _pin_failures += 1
+    if _pin_failures >= 5:
+        _pin_lockout_until = now + 300
+        _pin_failures = 0
+        raise HTTPException(status_code=429, detail="Too many failed PIN attempts. Locked out for 300s.")
     raise HTTPException(status_code=403, detail="Invalid security PIN.")
 
 
@@ -405,11 +422,11 @@ class PairRequestIn(BaseModel):
 @app.post("/api/pair/request")
 def request_pairing_endpoint(body: PairRequestIn) -> dict:
     """Request 6-digit device pairing code."""
-    import random
+    import secrets
     from .bus import bus
     now = time.time()
     expired = [k for k, v in _pairing_codes.items() if v['expires'] < now]; [_pairing_codes.pop(k) for k in expired]
-    code = f"{random.randint(100000, 999999)}"
+    code = f"{secrets.randbelow(900000) + 100000}"
     _pairing_codes[code] = {
         "expires": time.time() + 300,
         "device_name": body.device_name,
@@ -494,7 +511,8 @@ class ToolSynthesizeIn(BaseModel):
 
 
 @app.post("/api/tools/synthesize")
-def tool_synthesize_endpoint(body: ToolSynthesizeIn) -> dict:
+def tool_synthesize_endpoint(body: ToolSynthesizeIn, request: Request) -> dict:
+    _verify_sync_auth(request)
     from . import tool_synthesizer
     res = tool_synthesizer.synthesize_tool(
         name=body.name,
@@ -941,7 +959,8 @@ def get_autonomy_stats():
 
 
 @app.post("/api/autonomy/kill")
-def emergency_kill_switch():
+def emergency_kill_switch(request: Request):
+    _verify_sync_auth(request)
     from .kill_switch import get_kill_switch
     res = get_kill_switch().stop_all("API Emergency Stop")
     return res

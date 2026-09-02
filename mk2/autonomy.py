@@ -528,37 +528,41 @@ class AutonomousRunner:
                 pass
 
     def _save_state(self) -> None:
-        try:
-            out = {
-                "updated": time.time(),
-                "session_state": self.session_state,
-                "browser_state": getattr(get_browser(), "session_state", {}),
-                "missions": [
-                    {
-                        "id": m.id,
-                        "goal": m.goal,
-                        "status": m.status,
-                        "strategy": m.strategy_used,
-                        "context": m.context,
-                        "session_state": m.session_state,
-                        "subtasks": [
-                            {
-                                "id": st.id,
-                                "description": st.description,
-                                "tool_hint": st.tool_hint,
-                                "depends_on": st.depends_on,
-                                "result": st.result,
-                                "attempts": st.attempts,
-                            }
-                            for st in m.subtasks
-                        ],
-                    }
-                    for m in self.missions.values()
-                ],
-            }
-            GOALS_FILE.write_text(json.dumps(out, indent=2), encoding="utf-8")
-        except Exception:
-            pass
+        with self._lock:
+            try:
+                out = {
+                    "updated": time.time(),
+                    "session_state": self.session_state,
+                    "browser_state": getattr(get_browser(), "session_state", {}),
+                    "missions": [
+                        {
+                            "id": m.id,
+                            "goal": m.goal,
+                            "status": m.status,
+                            "strategy": m.strategy_used,
+                            "context": m.context,
+                            "session_state": m.session_state,
+                            "subtasks": [
+                                {
+                                    "id": st.id,
+                                    "description": st.description,
+                                    "tool_hint": st.tool_hint,
+                                    "depends_on": st.depends_on,
+                                    "result": st.result,
+                                    "attempts": st.attempts,
+                                }
+                                for st in m.subtasks
+                            ],
+                        }
+                        for m in self.missions.values()
+                    ],
+                }
+                GOALS_FILE.parent.mkdir(parents=True, exist_ok=True)
+                tmp_file = GOALS_FILE.with_suffix(".tmp")
+                tmp_file.write_text(json.dumps(out, indent=2), encoding="utf-8")
+                tmp_file.replace(GOALS_FILE)
+            except Exception as exc:
+                log.warning("Autonomy _save_state failed: %s", exc)
 
     def _verify_progress(self, mission: Mission, subtask: SubTask, result: dict) -> dict:
         """Verify if a subtask's outcome genuinely advances toward the overall goal."""
@@ -576,8 +580,10 @@ class AutonomousRunner:
             ], temperature=0.1, timeout=12, role="fast")
             data = json.loads(raw)
             return {"closer": bool(data.get("closer", True)), "assessment": data.get("assessment", "")}
-        except Exception:
-            return {"closer": True, "assessment": ""}
+        except Exception as exc:
+            log.warning("Progress verification LLM failed: %s", exc)
+            tool_ok = bool(result.get("ok", True))
+            return {"closer": tool_ok, "assessment": "Heuristic fallback based on execution outcome"}
 
     def _replan(self, mission: Mission, failed_subtask: SubTask, reason: str) -> list[dict] | None:
         """Dynamically re-plan remaining steps when a subtask fails."""

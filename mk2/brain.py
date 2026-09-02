@@ -144,13 +144,25 @@ def _fast_path(text: str) -> str | None:
     return None
 
 
+_last_online_check = 0.0
+_is_online_cached = True
+
+
 def _is_online() -> bool:
-    """Fast network connectivity probe."""
+    """Fast cached network connectivity probe (5s TTL) with low-overhead TCP socket check."""
+    global _last_online_check, _is_online_cached
+    now = time.time()
+    if now - _last_online_check < 5.0:
+        return _is_online_cached
+    _last_online_check = now
     try:
-        import urllib.request
-        with urllib.request.urlopen("https://1.1.1.1", timeout=1.5):
-            return True
+        import socket
+        s = socket.create_connection(("1.1.1.1", 53), timeout=0.3)
+        s.close()
+        _is_online_cached = True
+        return True
     except Exception:
+        _is_online_cached = False
         return False
 
 

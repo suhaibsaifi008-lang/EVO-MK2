@@ -11,12 +11,35 @@ import threading
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from . import config, db, llm
 
 _lock = threading.Lock()
 _state = {"turns_since_extract": 0}
-_opinions_store = {}
+_OPINIONS_FILE = Path(getattr(config, "DATA", Path("data"))) / "opinions.json"
+
+
+def _load_opinions() -> dict:
+	if _OPINIONS_FILE.exists():
+		try:
+			return json.loads(_OPINIONS_FILE.read_text(encoding="utf-8"))
+		except Exception:
+			return {}
+	return {}
+
+
+def _persist_opinions() -> None:
+	try:
+		_OPINIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+		tmp = _OPINIONS_FILE.with_suffix(".tmp")
+		tmp.write_text(json.dumps(_opinions_store, indent=2), encoding="utf-8")
+		tmp.replace(_OPINIONS_FILE)
+	except Exception:
+		pass
+
+
+_opinions_store = _load_opinions()
 from collections import deque as _deque
 _continuity_log: _deque = _deque(maxlen=1000)
 _relationship_depth = {
@@ -90,6 +113,7 @@ def track_opinion(topic: str, text: str, sentiment: str = None) -> None:
 		existing["ts"] = datetime.now().isoformat()
 		if len(existing["text"]) < 280:
 			existing["text"] = f"{existing['text']}; {text}"[:300]
+		_persist_opinions()
 
 
 
@@ -428,7 +452,7 @@ def build_context_messages(user_text: str, surface: str = "console") -> list[dic
 		for _compact_iter in range(100):
 			if tokens <= max_tokens * 0.85 or len(msgs) <= 4:
 				break
-			for i in range(len(msgs) - 1, 0, -1):
+			for i in range(1, len(msgs)):
 				if msgs[i].get("role") != "system":
 					msgs.pop(i)
 					break

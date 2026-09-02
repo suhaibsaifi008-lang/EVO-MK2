@@ -208,8 +208,14 @@ def _initiative_record_event(ev):
 		_initiative_event_buffer[:] = _initiative_event_buffer[-100:]
 
 
+_bus_subscribed = False
+
+
 def _initiative_subscribe_bus():
 	"""Subscribe to notify.out events so we can track completed tasks."""
+	global _bus_subscribed
+	if _bus_subscribed:
+		return
 	try:
 		from .bus import bus
 		def _on_notify(ev):
@@ -218,6 +224,7 @@ def _initiative_subscribe_bus():
 			except Exception:
 				pass
 		bus.subscribe("notify.out", callback=_on_notify)
+		_bus_subscribed = True
 	except Exception:
 		pass
 
@@ -242,6 +249,7 @@ def compose(candidate: str) -> str:
 
 def maybe_initiate(publish) -> bool:
 	"""Called by the kernel tick. Returns True when it spoke."""
+	_initiative_subscribe_bus()
 	now = datetime.now()
 	qs, qe, max_day = _limits()
 	with _lock:

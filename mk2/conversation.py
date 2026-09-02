@@ -148,7 +148,7 @@ def record_turn_completion(user_text: str, reply: str) -> None:
         _conv_ctx.last_user_turn = user_text
         _conv_ctx.last_evo_reply = reply
         _conv_ctx.turns_count += 1
-    # Simple topic extraction: first 4-5 words or key subject
-    words = [w for w in user_text.split() if len(w) > 3 and w.lower() not in ("what", "how", "when", "where", "tell", "show")]
-    if words:
-        _conv_ctx.last_topic = " ".join(words[:4])
+        # Simple topic extraction: first 4-5 words or key subject
+        words = [w for w in (user_text or "").split() if len(w) > 3 and w.lower() not in ("what", "how", "when", "where", "tell", "show")]
+        if words:
+            _conv_ctx.last_topic = " ".join(words[:4])

@@ -15,16 +15,16 @@ from .. import db
 
 _lock = threading.Lock()
 _REGISTRY: dict[str, "Tool"] = {}
-_emitter = {"fn": None}
+_tls = threading.local()
 
 
 def set_emitter(fn) -> None:
-    """Brain attaches its event emitter so long tools can stream progress."""
-    _emitter["fn"] = fn
+    """Brain attaches its event emitter so long tools can stream progress in current thread."""
+    _tls.emitter = fn
 
 
 def emit_progress(text: str) -> None:
-    fn = _emitter.get("fn")
+    fn = getattr(_tls, "emitter", None)
     if fn:
         try:
             fn({"type": "progress", "text": str(text)[:160]})

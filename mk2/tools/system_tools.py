@@ -204,12 +204,15 @@ def open_app(target: str) -> dict:
       {"target": {"type": "string"}}, permission="execute")
 def close_app(target: str) -> dict:
     import re as _re
-    if not _re.fullmatch(r'[\w\s.\-]+', target):
+    import base64
+    clean = (target or "").strip()
+    if not _re.fullmatch(r'[\w\s.\-]+', clean):
         return {"ok": False, "speech": f"Invalid app target: '{target}'.", "data": {}}
-    safe_target = target.replace("'", "''")
+    b64_target = base64.b64encode(clean.encode("utf-8")).decode("ascii")
     n = _run_ps(
+        f"$t = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{b64_target}')); "
         "(Get-Process | Where-Object {$_.MainWindowTitle -ne ''} | "
-        f"Where-Object {{ $_.MainWindowTitle -like '*{safe_target}*' }} | "
+        "Where-Object { $_.MainWindowTitle -like \"*$t*\" } | "
         "ForEach-Object { $_.CloseMainWindow() } | Measure-Object).Count"
     )
     count = int(n or 0)
@@ -230,6 +233,8 @@ def shell_run(command: str, timeout: int = 20) -> dict:
         "reg delete", "reg add",
         "bcdedit", "diskpart",
         "taskkill /f /im lsass", "taskkill /f /im csrss",
+        "invoke-expression", "iex ", "iex(", "downloadstring", "downloadfile",
+        "-encodedcommand", "-enc ",
     )
     if any(d in cmd_low for d in blocked):
         return {"ok": False, "speech": "Command blocked: destructive system command detected.", "data": {}}

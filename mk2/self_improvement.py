@@ -262,8 +262,9 @@ class SelfImprovementEngine:
         # 5. Apply patch
         try:
             clean_patch = val_res.get("clean_patch", "")
-            if clean_patch and len(clean_patch) > 50:
-                pass
+            if not clean_patch or len(clean_patch) < 20:
+                raise ValueError("Validated patch content is empty or incomplete.")
+            target_path.write_text(clean_patch, encoding="utf-8")
             self.audit.log_action(action, v, {"ok": True, "backup": str(backup_file)})
             return MoralVerdict.safe(f"Patch applied to {file_rel}. Backup stored at {backup_file.name}.", action=action)
         except Exception as exc:
