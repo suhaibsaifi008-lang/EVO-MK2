@@ -42,10 +42,10 @@ def _fast_path(text: str) -> str | None:
 
     if t in ("time", "the time", "what time", "whats the time",
              "what is the time", "what time is it", "current time"):
-        return datetime.now().strftime("%H:%M.")
+        return datetime.now().strftime("%H:%M")
     if t in ("date", "today", "todays date", "what is the date",
              "whats the date", "what day is it", "what is today"):
-        return datetime.now().strftime("%A, %d %B.")
+        return datetime.now().strftime("%A, %d %B")
     if re.search(r"who are you|what are you|your name", t):
         return "EVO. What do you need?"
     if re.search(r"what can you do|help|capabilities", t):
@@ -162,7 +162,8 @@ def _handle_offline(text: str) -> str | None:
     if any(k in t for k in ("calendar", "schedule", "my agenda", "upcoming events")):
         try:
             from . import vault
-            notes = [n for n in vault.list_notes() if "calendar" in n.get("topic", "").lower()]
+            with getattr(vault, "_vault_lock", threading.Lock()):
+                notes = [n for n in vault.list_notes() if "calendar" in n.get("topic", "").lower()]
             if notes:
                 return f"Cached calendar note: {notes[0].get('topic')}"
         except Exception:
@@ -422,12 +423,21 @@ def handle_turn(
     t0 = time.time()
     db.trace(turn_id, "start", 0)
 
+    turn_recorded = False
+
+    def _record_turn_once(u_text: str, a_text: str, surf: str) -> None:
+        nonlocal turn_recorded
+        if turn_recorded:
+            return
+        turn_recorded = True
+        memory.record_turn(u_text, a_text, surf)
+
     try:
         from . import conversation
         flow_res = conversation.evaluate_turn_intent(text)
         if flow_res.get("immediate_reply"):
             immediate = flow_res["immediate_reply"]
-            memory.record_turn(text, immediate, surface)
+            _record_turn_once(text, immediate, surface)
             emit({"type": "done", "text": immediate})
             if surface != "console":
                 bus.publish("convo.turn", {"id": turn_id, "text": text, "reply": immediate})
@@ -442,7 +452,7 @@ def handle_turn(
 
     instant = fast_command(text, surface=surface)
     if instant is not None:
-        memory.record_turn(text, instant, surface)
+        _record_turn_once(text, instant, surface)
         emit({"type": "done", "text": instant})
         db.trace(turn_id, "total_fastcmd", (time.time() - t0) * 1000)
         if surface != "console":  # console renders locally
@@ -460,7 +470,7 @@ def handle_turn(
     if not _is_online():
         off = _handle_offline(text)
         if off:
-            memory.record_turn(text, off, surface)
+            _record_turn_once(text, off, surface)
             emit({"type": "done", "text": off})
             if surface != "console":
                 bus.publish("convo.turn", {"id": turn_id, "text": text, "reply": off})
@@ -468,7 +478,7 @@ def handle_turn(
 
     fast = _fast_path(text)
     if fast:
-        memory.record_turn(text, fast, surface)
+        _record_turn_once(text, fast, surface)
         emit({"type": "done", "text": fast})
         db.trace(turn_id, "total_fastpath", (time.time() - t0) * 1000)
         if surface != "console":  # console renders locally
@@ -485,7 +495,7 @@ def handle_turn(
                 emit({"type": "plan", "steps": len(plan_obj.steps), "rationale": plan_obj.rationale})
                 res = planner.execute_plan(plan_obj, emit=emit, check_cancel=check_cancel)
                 reply = res.get("answer") or f"Executed plan for: {text}"
-                memory.record_turn(text, reply, surface)
+                _record_turn_once(text, reply, surface)
                 emit({"type": "done", "text": reply})
                 if surface != "console":
                     bus.publish("convo.turn", {"id": turn_id, "text": text, "reply": reply})
@@ -500,7 +510,7 @@ def handle_turn(
 
             res = autonomy.get_runner().execute_goal(text, background=True)
             reply = res.get("speech") or f"Starting autonomous mission to {text}. Working on it now."
-            memory.record_turn(text, reply, surface)
+            _record_turn_once(text, reply, surface)
             emit({"type": "done", "text": reply})
             if surface != "console":
                 bus.publish("convo.turn", {"id": turn_id, "text": text, "reply": reply})
@@ -676,11 +686,30 @@ def handle_turn(
 
             if name == "shell_run":
                 cmd = str(args.get("command", "")).lower()
-                if any(b in cmd for b in ("rm -rf", "del /s", "format", "shutdown", "reboot", "net user")):
+                blocked_shell = (
+                    "rm -rf", "del /s", "del /f", "format ", "format.", "shutdown", "reboot",
+                    "restart-computer", "stop-computer", "net user", "net localgroup",
+                    "remove-item -recurse", "remove-item", "reg delete", "reg add",
+                    "diskpart", "bcdedit", "taskkill /f /im lsass", "taskkill /f /im csrss"
+                )
+                if any(b in cmd for b in blocked_shell):
                     fail_streak += 1
                     messages.append({"role": "user", "content": f"TOOL RESULT ({name}): FAILED - Blocked command pattern detected."})
                     continue
-            if any(isinstance(v, str) and ".." in v for v in args.values()):
+
+            # Robust path traversal check (H3)
+            def _has_path_traversal(val: str) -> bool:
+                import urllib.parse
+                import unicodedata
+                raw_str = str(val or "")
+                decoded = urllib.parse.unquote(urllib.parse.unquote(raw_str))
+                normalized = unicodedata.normalize("NFKD", decoded)
+                low = normalized.lower().replace("\\", "/")
+                if any(p in low for p in ("../", "/..", "..", "%2e", "%2f", "%5c", "...")):
+                    return True
+                return False
+
+            if any(isinstance(v, str) and _has_path_traversal(v) for v in args.values()):
                 fail_streak += 1
                 messages.append({"role": "user", "content": f"TOOL RESULT ({name}): FAILED - Path traversal blocked."})
                 continue
@@ -689,21 +718,22 @@ def handle_turn(
             # stream progress, announce the result when done.
             manifest_by_name = {t["name"]: t for t in manifest}
             if manifest_by_name.get(name, {}).get("long_running"):
-                tools.set_emitter(emit)
-
-                def _bg_run(args=args):
-                    result_bg = _timed_tool_call(name, args, timeout_sec=15.0)
-                    tools.set_emitter(None)
-                    speech_bg = str(result_bg.get("speech", ""))[:300]
-                    bus.publish("notify.out", {"kind": name,
-                                               "text": f"{name} finished: {speech_bg}"})
+                def _bg_run(bg_args=args):
+                    try:
+                        tools.set_emitter(None)
+                        result_bg = _timed_tool_call(name, bg_args, timeout_sec=15.0)
+                        speech_bg = str(result_bg.get("speech", ""))[:300]
+                        bus.publish("notify.out", {"kind": name,
+                                                   "text": f"{name} finished: {speech_bg}"})
+                    except Exception as exc:
+                        log.warning("Background tool run '%s' failed: %s", name, exc)
 
                 threading.Thread(target=_bg_run, daemon=True,
                                  name=f"mk2-bg-{name}").start()
                 ack = (f"Started {name.replace('_', ' ')} on '{args.get('topic', args.get('goal', ''))[:60]}'. "
                        "I'll report back here when it's done.")
                 emit({"type": "done", "text": ack})
-                memory.record_turn(text, ack, surface)
+                _record_turn_once(text, ack, surface)
                 if surface != "console":  # console renders locally
                     bus.publish("convo.turn", {"id": turn_id, "text": text, "reply": ack})
                 return ack
@@ -763,15 +793,16 @@ def handle_turn(
                 continue
             answer = sanitize_final(raw)
 
-        # Sanitize final response and validate
+        # Sanitize final response and validate (L2)
         if answer:
-            try:
-                from .response_validator import validate_response
-                _, validated = validate_response(answer)
-                if validated:
-                    answer = validated
-            except Exception:
-                pass
+            if not check_cancel():
+                try:
+                    from .response_validator import validate_response
+                    _, validated = validate_response(answer, timeout=4.0, check_cancel=check_cancel)
+                    if validated:
+                        answer = validated
+                except Exception:
+                    pass
         if answer:
             break
 
@@ -783,7 +814,7 @@ def handle_turn(
             answer = sanitize_final(
                 llm.chat(messages, temperature=0.4, timeout=20))
         except Exception:
-            answer = ("I've processed your request. Let me know if you need any more details.")
+            answer = "I'm having trouble connecting to my reasoning engine right now. Please try again in a moment."
 
     emit({"type": "done", "text": answer})
     db.trace(turn_id, "total_agent", (time.time() - t0) * 1000, f"steps={step + 1}")
@@ -793,7 +824,7 @@ def handle_turn(
     # Background async post-turn housekeeping (zero latency overhead on user response)
     def _async_post_turn():
         try:
-            memory.record_turn(text, answer, surface)
+            _record_turn_once(text, answer, surface)
             memory.maybe_summarize(text, surface)
         except Exception:
             pass
@@ -803,17 +834,12 @@ def handle_turn(
         except Exception:
             pass
         try:
+            # H4: Sanitize context_snapshot on public bus — do not broadcast raw full chat messages or private fact keys
             context_snapshot = {
                 "turn_id": turn_id,
-                "text": text,
-                "reply": answer,
                 "surface": surface,
                 "timestamp": time.time(),
-                "recent_turns": [
-                    {"role": r["role"], "content": (r["content"] or "")[:200], "ts": r.get("ts", 0)}
-                    for r in db.recent_messages(6)
-                ],
-                "facts_loaded": [f["key"] for f in db.all_facts(10)],
+                "status": "completed",
             }
             bus.publish("convo.sync", context_snapshot)
         except Exception:

@@ -32,11 +32,37 @@ def _log_event(subsystem: str, event: str, **kwargs):
 class FunnelTracker:
     """Tracks stages: proposal_sent -> client_viewed -> client_responded -> hired -> delivered -> paid."""
 
+    _KNOWN_STAGES = {
+        "proposal_sent", "client_viewed", "client_responded", "hired", "delivered", "paid"
+    }
+
     def __init__(self, revenue_tracker: Optional[Any] = None):
         self.revenue = revenue_tracker or get_revenue_tracker()
 
-    def record_stage(self, stage: str, source: str, client: str = "", amount: float = 0.0, meta: dict | None = None) -> int:
-        return self.revenue.record_action(source, stage, client=client, amount=amount, status=stage, meta=meta)
+    def record_stage(self, stage: str = "proposal_sent", source: str = "general", client: str = "", amount: float = 0.0, meta: dict | None = None, **kwargs) -> int:
+        """Record a funnel stage transition with positional-order protection."""
+        s1 = str(stage or "").strip()
+        s2 = str(source or "").strip()
+        if s2 in self._KNOWN_STAGES and s1 not in self._KNOWN_STAGES:
+            real_source = s1
+            real_stage = s2
+        else:
+            real_stage = s1 if s1 in self._KNOWN_STAGES else (s1 or "proposal_sent")
+            real_source = s2 or "general"
+
+        if "action_type" in kwargs:
+            real_stage = str(kwargs["action_type"])
+        if "platform" in kwargs:
+            real_source = str(kwargs["platform"])
+
+        return self.revenue.record_action(
+            source=real_source,
+            action_type=real_stage,
+            client=client,
+            amount=amount,
+            status=real_stage,
+            meta=meta,
+        )
 
     def get_funnel_metrics(self, days: int = 30) -> dict[str, Any]:
         return self.revenue.get_funnel_metrics(days)
@@ -48,6 +74,7 @@ class MoneyEngine:
     def __init__(self, tick_interval: int = 3600):
         self.tick_interval = tick_interval
         self.running = False
+        self._lock = threading.Lock()
         self.thread: Optional[threading.Thread] = None
         self.vault = get_credential_vault()
         self.consent = get_consent_manager()
@@ -63,16 +90,18 @@ class MoneyEngine:
         self.last_tick_ts = 0.0
 
     def start(self) -> bool:
-        if self.running:
+        with self._lock:
+            if self.running:
+                return True
+            self.running = True
+            self.thread = threading.Thread(target=self._loop, daemon=True, name="EvoMoneyEngine")
+            self.thread.start()
+            log.info("MoneyEngine autonomous loop started (interval: %ds)", self.tick_interval)
             return True
-        self.running = True
-        self.thread = threading.Thread(target=self._loop, daemon=True, name="EvoMoneyEngine")
-        self.thread.start()
-        log.info("MoneyEngine autonomous loop started (interval: %ds)", self.tick_interval)
-        return True
 
     def stop(self) -> None:
-        self.running = False
+        with self._lock:
+            self.running = False
         log.info("MoneyEngine autonomous loop stopped.")
 
     def _loop(self) -> None:
@@ -83,11 +112,13 @@ class MoneyEngine:
                 log.error("MoneyEngine tick error: %s", exc)
                 self.audit.log_action({"type": "engine_error", "error": str(exc)}, outcome={"ok": False})
 
-            # Sleep in short increments for responsive shutdown
-            slept = 0
-            while self.running and slept < self.tick_interval:
-                time.sleep(2)
-                slept += 2
+            # Sleep in responsive increments without overshoot or infinite loops
+            target = max(1.0, float(self.tick_interval))
+            slept = 0.0
+            while self.running and slept < target:
+                step = min(1.0, target - slept)
+                time.sleep(step)
+                slept += step
 
     def tick(self) -> dict[str, Any]:
         """Run one cycle of opportunity discovery, evaluation, and proposal queueing."""
@@ -217,21 +248,38 @@ class MoneyEngine:
             idx = int(choice.get("pick", 0))
             if 0 <= idx < len(opportunities):
                 return opportunities[idx]
+            log.warning("LLM opportunity picker returned out-of-range index %d (total: %d)", idx, len(opportunities))
         except Exception as exc:
-            log.warning("LLM opportunity picker fallback: %s", exc)
+            log.warning("LLM opportunity picker failed: %s; selecting highest-value candidate", exc)
 
-        return opportunities[0]
+        # Fallback: rank by expected payout instead of blindly returning opportunities[0]
+        sorted_opps = sorted(opportunities, key=lambda o: float(o.get("bid", 0) or o.get("budget", 0) or 0), reverse=True)
+        fallback_pick = sorted_opps[0]
+        log.info("Selected fallback opportunity by expected payout: '%s' ($%s)", fallback_pick.get("title", ""), fallback_pick.get("bid", fallback_pick.get("budget", 0)))
+        return fallback_pick
 
     def execute_opportunity(self, opportunity: dict[str, Any]) -> dict[str, Any]:
         """Execute the opportunity through the respective platform agent."""
         plat = opportunity.get("platform")
         if plat == "upwork":
             v = self.upwork.submit_proposal(opportunity, user_approved=True)
-            self.funnel.record_stage("proposal_sent", "upwork", client=opportunity.get("client_id", ""), amount=float(opportunity.get("bid", 150.0)), meta={"gig": opportunity.get("title")})
+            self.funnel.record_stage(
+                stage="proposal_sent",
+                source="upwork",
+                client=opportunity.get("client_id", ""),
+                amount=float(opportunity.get("bid", 150.0)),
+                meta={"gig": opportunity.get("title")},
+            )
             return v.to_dict()
         elif plat == "email":
             # Draft and log
-            self.funnel.record_stage("proposal_sent", "email", client=opportunity.get("from", ""), amount=0.0, meta={"subject": opportunity.get("title")})
+            self.funnel.record_stage(
+                stage="proposal_sent",
+                source="email",
+                client=opportunity.get("from", ""),
+                amount=0.0,
+                meta={"subject": opportunity.get("title")},
+            )
             return {"ok": True, "status": "reviewed"}
         return {"ok": False, "error": f"Unknown platform: {plat}"}
 

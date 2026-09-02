@@ -23,35 +23,40 @@ class RevenueTracker:
 
     def _ensure_schema(self) -> None:
         try:
-            with sqlite3.connect(db.DB_PATH) as con:
-                con.execute("""
-                    CREATE TABLE IF NOT EXISTS autonomous_revenue (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        ts REAL NOT NULL,
-                        source TEXT NOT NULL,
-                        amount REAL NOT NULL DEFAULT 0.0,
-                        action_type TEXT NOT NULL,
-                        client_name TEXT,
-                        status TEXT NOT NULL,
-                        meta_json TEXT
-                    )
-                """)
-                con.execute("CREATE INDEX IF NOT EXISTS idx_rev_ts ON autonomous_revenue(ts)")
+            with db._lock:
+                with sqlite3.connect(db.DB_PATH) as con:
+                    con.execute("""
+                        CREATE TABLE IF NOT EXISTS autonomous_revenue (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            ts REAL NOT NULL,
+                            source TEXT NOT NULL,
+                            amount REAL NOT NULL DEFAULT 0.0,
+                            action_type TEXT NOT NULL,
+                            client_name TEXT,
+                            status TEXT NOT NULL,
+                            meta_json TEXT
+                        )
+                    """)
+                    con.execute("CREATE INDEX IF NOT EXISTS idx_rev_ts ON autonomous_revenue(ts)")
         except Exception as exc:
             log.warning("Failed to init autonomous_revenue table: %s", exc)
 
     def record_action(self, source: str, action_type: str, client: str = "", amount: float = 0.0, status: str = "initiated", meta: dict | None = None) -> int:
         now = time.time()
         try:
-            with sqlite3.connect(db.DB_PATH) as con:
-                cur = con.execute(
-                    """
-                    INSERT INTO autonomous_revenue (ts, source, amount, action_type, client_name, status, meta_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (now, source, amount, action_type, client, status, json.dumps(meta or {}, default=str)),
-                )
-                return cur.lastrowid or -1
+            with db._lock:
+                with sqlite3.connect(db.DB_PATH) as con:
+                    cur = con.execute(
+                        """
+                        INSERT INTO autonomous_revenue (ts, source, amount, action_type, client_name, status, meta_json)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (now, source, amount, action_type, client, status, json.dumps(meta or {}, default=str)),
+                    )
+                    row_id = cur.lastrowid or -1
+                    if row_id > 0 and row_id % 50 == 0:
+                        con.execute("DELETE FROM autonomous_revenue WHERE id <= (SELECT MAX(id) - 5000 FROM autonomous_revenue)")
+                    return row_id
         except Exception as exc:
             log.warning("Failed recording revenue action: %s", exc)
             return -1
@@ -67,16 +72,17 @@ class RevenueTracker:
         by_source: dict[str, float] = {}
 
         try:
-            with sqlite3.connect(db.DB_PATH) as con:
-                con.row_factory = sqlite3.Row
-                rows = con.execute("SELECT * FROM autonomous_revenue WHERE ts >= ?", (cutoff,)).fetchall()
-                for r in rows:
-                    total_actions += 1
-                    amt = float(r["amount"] or 0.0)
-                    src = str(r["source"] or "unknown")
-                    if r["status"] == "paid":
-                        total_revenue += amt
-                        by_source[src] = by_source.get(src, 0.0) + amt
+            with db._lock:
+                with sqlite3.connect(db.DB_PATH) as con:
+                    con.row_factory = sqlite3.Row
+                    rows = con.execute("SELECT * FROM autonomous_revenue WHERE ts >= ?", (cutoff,)).fetchall()
+                    for r in rows:
+                        total_actions += 1
+                        amt = float(r["amount"] or 0.0)
+                        src = str(r["source"] or "unknown")
+                        if r["status"] == "paid":
+                            total_revenue += amt
+                            by_source[src] = by_source.get(src, 0.0) + amt
         except Exception as exc:
             log.warning("Failed querying revenue stats: %s", exc)
 
@@ -116,22 +122,23 @@ class RevenueTracker:
         total_value = 0.0
 
         try:
-            with sqlite3.connect(db.DB_PATH) as con:
-                con.row_factory = sqlite3.Row
-                rows = con.execute("SELECT action_type, status, amount FROM autonomous_revenue WHERE ts >= ?", (cutoff,)).fetchall()
-                for r in rows:
-                    act = str(r["action_type"] or "")
-                    st = str(r["status"] or "")
-                    amt = float(r["amount"] or 0.0)
+            with db._lock:
+                with sqlite3.connect(db.DB_PATH) as con:
+                    con.row_factory = sqlite3.Row
+                    rows = con.execute("SELECT action_type, status, amount FROM autonomous_revenue WHERE ts >= ?", (cutoff,)).fetchall()
+                    for r in rows:
+                        act = str(r["action_type"] or "")
+                        st = str(r["status"] or "")
+                        amt = float(r["amount"] or 0.0)
 
-                    if act in stages:
-                        stages[act] += 1
-                    elif st in stages:
-                        stages[st] += 1
+                        if act in stages:
+                            stages[act] += 1
+                        elif st in stages:
+                            stages[st] += 1
 
-                    if st == "paid" or act == "payment_received":
-                        total_value += amt
-                        stages["paid"] = stages.get("paid", 0) + 1
+                        if st == "paid" or act == "payment_received":
+                            total_value += amt
+                            stages["paid"] = stages.get("paid", 0) + 1
         except Exception as exc:
             log.warning("Failed querying funnel metrics: %s", exc)
 

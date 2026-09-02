@@ -497,8 +497,9 @@ def record_turn(user_text: str, reply: str, surface: str) -> None:
 	db.log_message("user", user_text.strip(), surface)
 	db.log_message("assistant", reply.strip(), surface)
 	with _lock:
+		_continuity_log.append({"user": user_text.strip(), "assistant": reply.strip(), "surface": surface, "ts": time.time()})
 		_state["turns_since_extract"] += 1
-		due = EXPLICIT.search(user_text) or _state["turns_since_extract"] >= 6
+		due = bool(EXPLICIT.search(user_text) or _state["turns_since_extract"] >= 6)
 		_state["turns_since_extract"] = 0 if due else _state["turns_since_extract"]
 	if not due:
 		return

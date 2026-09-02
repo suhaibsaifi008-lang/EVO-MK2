@@ -103,7 +103,14 @@ class StripeAgent:
                     log.warning("Stripe live API invoice note: %s", exc)
 
             self.first_invoice_sent = True
-            self.revenue.record_action(action, f"Stripe invoice dispatched to {client_email}")
+            self.revenue.record_action(
+                source="stripe",
+                action_type="invoice_dispatched",
+                client=client_email,
+                amount=amount,
+                status="sent",
+                meta={"action": action, "description": f"Stripe invoice dispatched to {client_email}"},
+            )
             self.audit.log_action(action, v, {"ok": True, "amount": amount, "client": client_email})
             return MoralVerdict.safe(f"Stripe invoice of ${amount:.2f} issued to {client_email}.", action=action)
         except Exception as exc:
@@ -119,10 +126,10 @@ class StripeAgent:
                     bal = stripe.Balance.retrieve()
                     available = sum(b.get("amount", 0) for b in bal.get("available", [])) / 100.0
                     return {"available": available, "currency": "usd", "source": "stripe_api"}
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except Exception as exc:
+                    log.warning("Stripe live API balance retrieval failed: %s", exc)
+        except Exception as exc:
+            log.warning("Stripe get_balance check failed: %s", exc)
 
         stats = self.revenue.get_stats(30)
         return {"available": stats.get("total_revenue", 0.0), "currency": "usd", "source": "local_ledger"}
@@ -135,40 +142,37 @@ class StripeAgent:
                     import stripe
                     charges = stripe.Charge.list(limit=limit)
                     return [{"id": c.id, "amount": c.amount / 100.0, "status": c.status, "created": c.created} for c in charges.data]
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except Exception as exc:
+                    log.warning("Stripe live API charges retrieval failed: %s", exc)
+        except Exception as exc:
+            log.warning("Stripe get_payments check failed: %s", exc)
         return []
 
     def create_payment_link(self, product_name: str, price: float) -> MoralVerdict:
-        """Generate a Stripe checkout payment link."""
+        """Generate a real Stripe checkout payment link."""
         action = {"platform": "stripe", "action": "create_payment_link", "product": product_name, "price": price}
         v = self.ethics.evaluate(action)
         if v.verdict == "block":
             return v
 
-        try:
-            if self.connected:
-                try:
-                    import stripe
-                    price_obj = stripe.Price.create(
-                        unit_amount=int(price * 100),
-                        currency="usd",
-                        product_data={"name": product_name},
-                    )
-                    link = stripe.PaymentLink.create(line_items=[{"price": price_obj.id, "quantity": 1}])
-                    self.audit.log_action(action, v, {"ok": True, "url": link.url})
-                    return MoralVerdict.safe(f"Payment link created for '{product_name}' (${price:.2f}).", action={"url": link.url})
-                except Exception:
-                    pass
+        if not self.connected:
+            msg = "Stripe is not configured or connected. Set STRIPE_SECRET_KEY to create live payment links."
+            log.warning(msg)
+            return MoralVerdict.caution(msg, action=action)
 
-            demo_url = f"https://buy.stripe.com/checkout_{int(price)}"
-            self.audit.log_action(action, v, {"ok": True, "url": demo_url})
-            return MoralVerdict.safe(f"Payment link generated for '{product_name}' (${price:.2f}).", action={"url": demo_url})
+        try:
+            import stripe
+            price_obj = stripe.Price.create(
+                unit_amount=int(price * 100),
+                currency="usd",
+                product_data={"name": product_name},
+            )
+            link = stripe.PaymentLink.create(line_items=[{"price": price_obj.id, "quantity": 1}])
+            self.audit.log_action(action, v, {"ok": True, "url": link.url})
+            return MoralVerdict.safe(f"Payment link created for '{product_name}' (${price:.2f}).", action={"url": link.url})
         except Exception as exc:
-            log.warning("Stripe create_payment_link failed: %s", exc)
-            return MoralVerdict.caution(f"Failed to create payment link: {exc}", action=action)
+            log.error("Stripe live API payment link creation failed: %s", exc)
+            return MoralVerdict.caution(f"Stripe payment link creation failed: {exc}", action=action)
 
 
 _global_stripe: Optional[StripeAgent] = None

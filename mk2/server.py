@@ -348,14 +348,35 @@ def get_session_state_endpoint() -> dict:
     }
 
 
+def _verify_sync_auth(request: Request) -> None:
+    """Verify authorization via API key or an approved device pairing code."""
+    api_key = _resolve_api_key()
+    provided_key = (
+        request.headers.get("x-api-key", "")
+        or request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+    )
+    if api_key:
+        if provided_key == api_key:
+            return
+        raise HTTPException(status_code=401, detail="Unauthorized: invalid API key.")
+
+    # Check for approved pairing code
+    pair_code = request.headers.get("x-pair-code") or request.headers.get("x-pairing-code")
+    if pair_code and _pairing_codes.get(pair_code, {}).get("approved"):
+        return
+
+    raise HTTPException(status_code=401, detail="Unauthorized: device synchronization requires API key or approved pairing code.")
+
+
 class SessionImportIn(BaseModel):
     recent_turns: list[dict] = []
     facts: list[dict] = []
 
 
 @app.post("/api/session/import")
-def import_session_endpoint(body: SessionImportIn) -> dict:
+def import_session_endpoint(body: SessionImportIn, request: Request) -> dict:
     """Import conversational turns and facts from remote device."""
+    _verify_sync_auth(request)
     if len(body.recent_turns) > 50:
         body.recent_turns = body.recent_turns[:50]
     if len(body.facts) > 50:
@@ -424,13 +445,15 @@ def sync_status_endpoint() -> dict:
 
 
 @app.get("/api/sync/pull")
-def sync_pull_endpoint() -> dict:
+def sync_pull_endpoint(request: Request) -> dict:
+    _verify_sync_auth(request)
     from . import sync
     return sync.export_sync_bundle()
 
 
 @app.post("/api/sync/push")
-def sync_push_endpoint(bundle: dict[str, Any]) -> dict:
+def sync_push_endpoint(bundle: dict[str, Any], request: Request) -> dict:
+    _verify_sync_auth(request)
     from . import sync
     res = sync.import_sync_bundle(bundle)
     if not res.get("ok"):
@@ -515,9 +538,12 @@ async def ws_voice(ws: WebSocket) -> None:
     await ws.accept()
     api_key = _resolve_api_key()
     if api_key:
-        provided = ws.query_params.get("key", "")
+        auth_hdr = (ws.headers.get("x-api-key") or ws.headers.get("authorization", "")).removeprefix("Bearer ").strip()
+        subproto = ws.headers.get("sec-websocket-protocol", "").strip()
+        query_key = ws.query_params.get("key", "").strip()
+        provided = auth_hdr or subproto or query_key
         if provided != api_key:
-            await ws.close()
+            await ws.close(code=1008)
             return
     loop = asyncio.get_running_loop()
     state = {"busy": False, "cancel": False}
@@ -971,6 +997,50 @@ def get_autonomy_health():
         "silent_failures": 0,
         "last_check": now_iso,
     }
+
+
+def _check_finance_consent() -> None:
+    """Ensure client has consent to access sensitive financial data."""
+    from .consent import get_consent_manager
+    cm = get_consent_manager()
+    if cm.get_level() == "none":
+        raise HTTPException(status_code=403, detail="Consent denied: financial access is disabled.")
+
+
+@app.get("/api/money/briefing")
+def get_money_briefing_endpoint():
+    _check_finance_consent()
+    from .financial_intelligence import get_financial_intelligence
+    return {"ok": True, "briefing": get_financial_intelligence().financial_briefing()}
+
+
+@app.get("/api/money/pipeline")
+def get_money_pipeline_endpoint(days: int = 30):
+    _check_finance_consent()
+    from .money_engine import get_money_engine
+    return {"ok": True, "pipeline": get_money_engine().get_funnel_metrics(days)}
+
+
+@app.get("/api/money/clients")
+def get_money_clients_endpoint():
+    _check_finance_consent()
+    from .revenue import get_revenue_tracker
+    return {"ok": True, "stats": get_revenue_tracker().get_stats(30)}
+
+
+@app.get("/api/money/opportunities")
+def get_money_opportunities_endpoint():
+    _check_finance_consent()
+    from .money_engine import get_money_engine
+    return {"ok": True, "opportunities": get_money_engine().scan_opportunities()}
+
+
+@app.get("/api/money/followup")
+def get_money_followup_endpoint():
+    _check_finance_consent()
+    from .money_engine import get_money_engine
+    return {"ok": True, "followups": get_money_engine().finance.diversification_suggestions([])}
+
 
 
 

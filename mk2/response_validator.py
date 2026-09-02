@@ -21,7 +21,7 @@ PERSONA_RULES = [
 ]
 
 
-def validate_response(text: str) -> Tuple[bool, str]:
+def validate_response(text: str, timeout: float = 4.0, check_cancel = None) -> Tuple[bool, str]:
     """Check text against persona rules; rewrite naturally if violations exist."""
     t = (text or "").strip()
     if not t:
@@ -33,6 +33,9 @@ def validate_response(text: str) -> Tuple[bool, str]:
             violations.append(rule_name)
 
     if not violations:
+        return True, t
+
+    if check_cancel and check_cancel():
         return True, t
 
     log.info("Persona violations detected: %s. Rewriting response...", violations)
@@ -52,7 +55,7 @@ def validate_response(text: str) -> Tuple[bool, str]:
         fixed = llm.chat([
             {"role": "system", "content": "You are a persona editor transforming assistant replies into crisp JARVIS dialogue."},
             {"role": "user", "content": prompt},
-        ], role="fast", temperature=0.2, timeout=10)
+        ], role="fast", temperature=0.2, timeout=timeout)
 
         cleaned = fixed.strip()
         if cleaned:

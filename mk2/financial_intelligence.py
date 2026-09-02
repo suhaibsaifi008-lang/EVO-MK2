@@ -81,10 +81,14 @@ class FinancialIntelligence:
             clean = raw.strip()
             if clean.startswith("```"):
                 clean = clean.split("\n", 1)[-1].rsplit("```", 1)[0]
-            return json.loads(clean.strip())
+            data = json.loads(clean.strip())
+            if isinstance(data, dict):
+                data["is_fallback"] = False
+            return data
         except Exception as exc:
             log.warning("Opportunity deep evaluation error: %s", exc)
             return {
+                "is_fallback": True,
                 "score": 6,
                 "roi_estimate": "Moderate short-term cashflow",
                 "risk_level": "low",
@@ -124,10 +128,14 @@ class FinancialIntelligence:
             clean = raw.strip()
             if clean.startswith("```"):
                 clean = clean.split("\n", 1)[-1].rsplit("```", 1)[0]
-            return json.loads(clean.strip())
+            data = json.loads(clean.strip())
+            if isinstance(data, dict):
+                data["is_fallback"] = False
+            return data
         except Exception as exc:
             log.warning("Pricing suggestion error: %s", exc)
             return {
+                "is_fallback": True,
                 "suggested_price": 175.0,
                 "pricing_model": "fixed_price",
                 "market_range": "$100 - $250",
@@ -157,10 +165,14 @@ class FinancialIntelligence:
             clean = raw.strip()
             if clean.startswith("```"):
                 clean = clean.split("\n", 1)[-1].rsplit("```", 1)[0]
-            return json.loads(clean.strip())
+            data = json.loads(clean.strip())
+            if isinstance(data, dict):
+                data["is_fallback"] = False
+            return data
         except Exception as exc:
             log.warning("Risk assessment error: %s", exc)
             return {
+                "is_fallback": True,
                 "scam_probability": "low",
                 "payment_safety": "escrow_required",
                 "time_vs_return_ratio": "favorable",
@@ -171,12 +183,13 @@ class FinancialIntelligence:
     def market_research(self, service_type: str) -> dict[str, Any]:
         """Research current market rates and demand for a service type using web search."""
         raw_intel = self._fetch_market_intel(f"{service_type} demand freelance market rates 2026")
+        safe_service = json.dumps(str(service_type or "software development"))
         prompt = (
-            f"Synthesize current freelance market dynamics for '{service_type}':\n"
+            f"Synthesize current freelance market dynamics for {safe_service}:\n"
             f"Search Data: {raw_intel[:600]}\n\n"
             "Return ONLY JSON:\n"
             "{\n"
-            '  "service": "' + service_type + '",\n'
+            f'  "service": {safe_service},\n'
             '  "demand_level": "high"|"moderate"|"niche",\n'
             '  "average_rate_usd": "<e.g. $75/hr or $250 fixed>",\n'
             '  "top_buyer_needs": ["<need1>", "<need2>"],\n'
@@ -192,9 +205,14 @@ class FinancialIntelligence:
             clean = raw.strip()
             if clean.startswith("```"):
                 clean = clean.split("\n", 1)[-1].rsplit("```", 1)[0]
-            return json.loads(clean.strip())
+            data = json.loads(clean.strip())
+            if isinstance(data, dict):
+                data["is_fallback"] = False
+            return data
         except Exception as exc:
+            log.warning("Market research analysis error: %s", exc)
             return {
+                "is_fallback": True,
                 "service": service_type,
                 "demand_level": "high",
                 "average_rate_usd": "$75/hr",
@@ -225,10 +243,17 @@ class FinancialIntelligence:
             clean = raw.strip()
             if clean.startswith("```"):
                 clean = clean.split("\n", 1)[-1].rsplit("```", 1)[0]
-            return json.loads(clean.strip())
+            data = json.loads(clean.strip())
+            if isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict):
+                        item["is_fallback"] = False
+            return data
         except Exception as exc:
+            log.warning("Diversification suggestions error: %s", exc)
             return [
                 {
+                    "is_fallback": True,
                     "stream": "Gumroad Automation Code Packs",
                     "type": "digital_product",
                     "projected_monthly": "$300-$800",
@@ -236,6 +261,7 @@ class FinancialIntelligence:
                     "strategy": "Package proven Playwright scrapers into plug-and-play developer boilerplates.",
                 },
                 {
+                    "is_fallback": True,
                     "stream": "Retainer API Maintenance",
                     "type": "service",
                     "projected_monthly": "$1,000-$2,500",
