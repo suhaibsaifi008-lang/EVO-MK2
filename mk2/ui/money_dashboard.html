@@ -282,7 +282,12 @@
       }
       if (d.proactive_alerts && d.proactive_alerts.length > 0) {
         const cont = document.getElementById('proactive-container');
-        cont.innerHTML = d.proactive_alerts.map(a => '<div class="intel-item">' + a + '</div>').join('');
+        cont.replaceChildren(...d.proactive_alerts.map(a => {
+          const el = document.createElement('div');
+          el.className = 'intel-item';
+          el.textContent = a;
+          return el;
+        }));
       }
     }
 

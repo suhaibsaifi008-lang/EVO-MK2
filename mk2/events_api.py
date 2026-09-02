@@ -1,7 +1,8 @@
-﻿"""SSE feed of system events for the face/console."""
+"""SSE feed of system events for the face/console."""
 import asyncio
 import json
 
+from fastapi import Request
 from fastapi.responses import StreamingResponse
 
 from .bus import bus
@@ -9,7 +10,9 @@ from .bus import bus
 
 def register(app) -> None:
     @app.get("/api/events")
-    async def events():
+    async def events(request: Request):
+        from .server import _verify_sync_auth
+        _verify_sync_auth(request)
         async def source():
             sub, q = bus.subscribe_async("**")
             try:

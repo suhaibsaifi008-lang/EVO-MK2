@@ -139,11 +139,7 @@ def due_now() -> list[str]:
             with _lock:
                 last_day = _last_run.get(f"{name}@day", "")
             if last_day != stamp:
-                h, m = str(sched["daily"]).split(":")[:2]
-                target = now.replace(hour=int(h), minute=int(m),
-                                     second=0, microsecond=0)
-                if now >= target and last_day != stamp:
-                    due.append(name)
+                due.append(name)
     return due
 
 

@@ -660,7 +660,7 @@ def _race_stream(pairs, messages: list[dict], temperature: float,
                             _record_ttft(prov["name"], m, dt)
                             first = False
             elif prov.get("kind") == "gemini":
-                client = _gemini_client()
+                client = _hard_bounded(lambda: _gemini_client(), 10)
                 from google.genai import types
 
                 sys = [mm["content"] for mm in messages if mm["role"] == "system"]

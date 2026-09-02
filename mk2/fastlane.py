@@ -54,10 +54,10 @@ def _single(t, surface="console"):
 	# time / date
 	if re.search(r"\bwhat time\b|\bcurrent time\b|^time$", t):
 		from datetime import datetime
-		return datetime.now().strftime("%H:%M.")
+		return datetime.now().strftime("%H:%M")
 	if re.search(r"\bwhat day\b|\bwhat.s the date\b|todays date|^date$", t):
 		from datetime import datetime
-		return datetime.now().strftime("%A, %d %B.")
+		return datetime.now().strftime("%A, %d %B")
 
 	# screen read
 	if re.search(r"(what.s? on my screen|whats on my screen|on my screen|read my screen|see my screen)", t):
@@ -99,7 +99,8 @@ def _single(t, surface="console"):
 	# brightness
 	m = re.fullmatch(r"(?:set )?brightness (?:to )?(\d+)", t)
 	if m:
-		return tools.call("brightness_set", {"level": int(m.group(1))}).get("speech")
+		lvl = max(0, min(100, int(m.group(1))))
+		return tools.call("brightness_set", {"level": lvl}).get("speech")
 	if re.fullmatch(r"brightness(?: level)?", t):
 		return tools.call("brightness_get").get("speech")
 

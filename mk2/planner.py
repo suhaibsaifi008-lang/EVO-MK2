@@ -189,7 +189,7 @@ def verify_step(step: PlanStep, result: str, plan_goal: str) -> tuple[bool, str]
             return False, reason or "Failed verification"
     except Exception as exc:
         log.warning("Step verification LLM failed: %s", exc)
-        out_str = str(tool_output or "").lower()
+        out_str = str(result or "").lower()
         failed = any(w in out_str for w in ("error", "failed", "exception", "denied", "circuit_open"))
         return not failed, f"Heuristic verification: {'passed' if not failed else 'failed'} ({exc})"
 

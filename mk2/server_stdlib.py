@@ -1,22 +1,25 @@
 """Minimal stdlib HTTP server for EVO MK2."""
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
-sys.path.insert(0, "/sessions/gracious-laughing-tesla/mnt/EVO-MK2")
-UI_DIR = Path("/sessions/gracious-laughing-tesla/mnt/EVO-MK2/mk2/ui")
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+UI_DIR = Path(__file__).resolve().parent / "ui"
 
 def _build_response(status, ctype, body):
- if isinstance(body, str):
- body = body.encode("utf-8")
- header = "HTTP/1.1 " + status + "\r\n"
- header += "Content-Type: " + ctype + "\r\n"
- header += "Content-Length: " + str(len(body)) + "\r\n"
- header += "Connection: close\r\n"
- header += "Access-Control-Allow-Origin: *\r\n\r\n"
- return header.encode("utf-8") + body
+    if isinstance(body, str):
+        body = body.encode("utf-8")
+    header = "HTTP/1.1 " + status + "\r\n"
+    header += "Content-Type: " + ctype + "\r\n"
+    header += "Content-Length: " + str(len(body)) + "\r\n"
+    header += "Connection: close\r\n"
+    header += "Access-Control-Allow-Origin: http://localhost:8421\r\n\r\n"
+    return header.encode("utf-8") + body
 
 def _json_ok(data):
  return _build_response("200 OK", "application/json", json.dumps(data, ensure_ascii=False))
