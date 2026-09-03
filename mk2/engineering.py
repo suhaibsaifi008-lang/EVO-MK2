@@ -64,6 +64,7 @@ class EngineeringProject:
 
 class EngineeringWorkspace:
     """Isolated sandbox directory for building, running, and testing code."""
+    DEFAULT_TIMEOUT: float = 30.0
 
     def __init__(self, project_id: str) -> None:
         self.project_id = project_id
@@ -87,8 +88,9 @@ class EngineeringWorkspace:
     def list_files(self) -> list[str]:
         return [str(p.relative_to(self.path)) for p in self.path.rglob("*") if p.is_file()]
 
-    def run_tests(self, test_file: str = "test_solution.py", timeout_sec: int = 30) -> tuple[bool, str, str]:
+    def run_tests(self, test_file: str = "test_solution.py", timeout_sec: Optional[float] = None) -> tuple[bool, str, str]:
         """Execute test suite inside sandbox using python -m pytest or unittest."""
+        t_limit = timeout_sec if timeout_sec is not None else self.DEFAULT_TIMEOUT
         cmd = [sys.executable, "-m", "pytest", test_file, "-q"]
         try:
             res = subprocess.run(
@@ -96,13 +98,13 @@ class EngineeringWorkspace:
                 cwd=str(self.path),
                 capture_output=True,
                 text=True,
-                timeout=timeout_sec,
+                timeout=t_limit,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             passed = res.returncode == 0
             return passed, res.stdout, res.stderr
         except subprocess.TimeoutExpired:
-            return False, "", f"Execution timed out after {timeout_sec}s."
+            return False, "", f"Execution timed out after {t_limit}s."
         except Exception as exc:
             # Fallback to unittest if pytest not available
             try:

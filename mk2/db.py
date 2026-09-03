@@ -141,6 +141,27 @@ CREATE TABLE IF NOT EXISTS memory_graph (
 );
 CREATE INDEX IF NOT EXISTS idx_mem_graph_source ON memory_graph(source);
 CREATE INDEX IF NOT EXISTS idx_mem_graph_target ON memory_graph(target);
+CREATE TABLE IF NOT EXISTS audit_chain (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    actor TEXT NOT NULL,
+    action TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    prev_hash TEXT NOT NULL,
+    entry_hash TEXT NOT NULL,
+    signature TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_chain_ts ON audit_chain(ts);
+CREATE TABLE IF NOT EXISTS idempotency_ledger (
+    key TEXT PRIMARY KEY,
+    scope TEXT NOT NULL,
+    status TEXT NOT NULL,
+    lease_until REAL,
+    result_json TEXT,
+    created_at REAL NOT NULL,
+    completed_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_idempotency_scope ON idempotency_ledger(scope);
 """
 
 

@@ -153,22 +153,20 @@ def call(name: str, args: dict | None = None) -> dict:
             "data": {"circuit_open": True},
         }
 
+    # M8.1: Unified Authorization Pipeline Gate
     try:
+        from ..authz import check_authorization
+        decision = check_authorization(action=name, args=args, actor="user", source="tools")
+        if not decision.allowed:
+            db.audit(name, _masked_args(args), False, decision.reason)
+            return {"ok": False, "speech": decision.reason, "data": decision.to_dict()}
+    except Exception as authz_exc:
+        # Fallback to local consent check if authz pipeline encounters unexpected issue
         from ..consent import get_consent_manager
         cm = get_consent_manager()
         if not cm.has_consent(name):
             db.audit(name, str(args)[:200], False, f"consent denied for {name}")
             return {"ok": False, "speech": f"Consent denied: cannot execute '{name}'.", "data": {}}
-        from ..autonomy import is_allowed
-        if not is_allowed(name, t.permission):
-            db.audit(name, _masked_args(args), False, f"permission denied for {name} ({t.permission})")
-            return {"ok": False, "speech": f"permission denied: cannot execute '{name}'.", "data": {}}
-    except ImportError:
-        pass
-
-    from ..kill_switch import get_kill_switch
-    if getattr(get_kill_switch(), "is_active", lambda: False)():
-        return {"ok": False, "speech": "Kill switch active — all tools disabled.", "data": {}}
 
     retries = _RETRY_COUNT if name in _RETRYABLE else 0
     last_exc = None
