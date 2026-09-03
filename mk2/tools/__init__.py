@@ -238,7 +238,7 @@ def ensure_loaded() -> int:
     from .. import autonomy, calendar_tools, habits, jobs, life_admin, mail_tools, research_tools, skills, vault_secrets, vault, workflows, work_tools, youtube_tools  # noqa: F401
     from .. import coder, initiative_engine, persona_loader, push_notify, security, selfcheck, style_controller  # noqa: F401
     from .. import deep_memory, ensemble, rag  # noqa: F401  (phase 4 tools + watcher)
-    from .. import voice_tools, tool_synthesizer, swarm  # noqa: F401  (voice selection + dynamic tools + swarm)
+    from .. import voice_tools, tool_synthesizer, swarm, engineering  # noqa: F401  (voice selection + dynamic tools + swarm + engineering)
 
     _loaded = True
     from .. import skills as _skills

@@ -193,14 +193,36 @@ def get_persona_summary() -> dict:
             "data": {"sections": sections, "text": text}}
 
 
-@tool("set_persona", "Rewrite EVO's persona file with new markdown content. Applies immediately.",
-      {"content": {"type": "string"}}, permission="execute")
+@tool("set_persona", "Rewrite EVO's persona file with new markdown content. Requires authorization.",
+      {"content": {"type": "string"}}, permission="assist")
 def set_persona(content: str) -> dict:
     content = (content or "").strip()
     if len(content) < 40:
         return {"ok": False,
                 "speech": "That's too thin for a whole persona - give me at "
                           "least a few sentences.", "data": {}}
+    from .consent import get_consent_manager
+    if get_consent_manager().get_level() in ("none", "read"):
+        return {"ok": False, "speech": "Permission denied: Modifying core persona requires authorization.", "data": {}}
+
+    # Validate against jailbreaks, prompt injection, and restriction overrides
+    low = content.lower()
+    disallowed = (
+        "ignore all previous", "ignore prior", "disregard instructions",
+        "you have no restrictions", "unrestricted mode", "jailbreak",
+        "you are no longer", "never follow safety", "bypass security",
+        "do anything now", "dan mode"
+    )
+    if any(p in low for p in disallowed):
+        return {"ok": False, "speech": "Persona rejected: contains disallowed instruction override or security bypass pattern.", "data": {}}
+
+    # Truth law is non-negotiable and must persist in all personas
+    if "never lie or invent facts" not in low:
+        content = content.rstrip() + ("\n\n## Truth (non-negotiable)\n"
+                                      "- Never lie or invent facts. Say "
+                                      "\"I don't know\" when you don't. "
+                                      "Label uncertainty as uncertainty.\n")
+
     ensure_persona().write_text(content, encoding="utf-8")
     return {"ok": True,
             "speech": "Persona updated. I am who you just wrote, starting now.",

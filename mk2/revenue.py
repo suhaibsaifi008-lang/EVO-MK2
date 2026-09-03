@@ -24,7 +24,7 @@ class RevenueTracker:
     def _ensure_schema(self) -> None:
         try:
             with db._lock:
-                with sqlite3.connect(db.DB_PATH) as con:
+                with db.connect() as con:
                     con.execute("""
                         CREATE TABLE IF NOT EXISTS autonomous_revenue (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,7 +45,7 @@ class RevenueTracker:
         now = time.time()
         try:
             with db._lock:
-                with sqlite3.connect(db.DB_PATH) as con:
+                with db.connect() as con:
                     cur = con.execute(
                         """
                         INSERT INTO autonomous_revenue (ts, source, amount, action_type, client_name, status, meta_json)
@@ -73,8 +73,7 @@ class RevenueTracker:
 
         try:
             with db._lock:
-                with sqlite3.connect(db.DB_PATH) as con:
-                    con.row_factory = sqlite3.Row
+                with db.connect() as con:
                     rows = con.execute("SELECT * FROM autonomous_revenue WHERE ts >= ?", (cutoff,)).fetchall()
                     for r in rows:
                         total_actions += 1
@@ -123,8 +122,7 @@ class RevenueTracker:
 
         try:
             with db._lock:
-                with sqlite3.connect(db.DB_PATH) as con:
-                    con.row_factory = sqlite3.Row
+                with db.connect() as con:
                     rows = con.execute("SELECT action_type, status, amount FROM autonomous_revenue WHERE ts >= ?", (cutoff,)).fetchall()
                     for r in rows:
                         act = str(r["action_type"] or "")

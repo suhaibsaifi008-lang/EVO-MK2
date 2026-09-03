@@ -35,7 +35,7 @@ ACTIONS_BY_LEVEL = {
         "task_start", "task_status", "task_stop", "task_resume", "task_retry", "tts_speak",
         "tts_set_voice", "tts_rate", "remember_episode", "browser_navigate", "browser_screenshot",
         "browser_open", "browser_read", "app_open", "open_app", "pc_control", "volume_set",
-        "volume_get", "close_app", "mail_draft"
+        "volume_get", "close_app", "mail_draft", "set_persona"
     ],
     "execute": [
         "browser_click", "browser_type", "browser_act", "mouse_click", "type_text", "press_key"
@@ -101,17 +101,24 @@ class ConsentManager:
     def get_level(self) -> str:
         return self.current_level
 
-    def set_level(self, level: str, require_user_confirmation: bool = True) -> bool:
+    def set_level(self, level: str, require_user_confirmation: bool = False) -> bool:
         lvl = level.strip().lower()
         if lvl not in CONSENT_LEVELS:
             return False
         old_level = self.current_level
+        old_idx = CONSENT_LEVELS.index(old_level) if old_level in CONSENT_LEVELS else 2
+        new_idx = CONSENT_LEVELS.index(lvl)
+        # Block escalation when require_user_confirmation is True and level is going up
+        if require_user_confirmation and new_idx > old_idx:
+            log.warning("Consent escalation %s -> %s blocked: requires user confirmation.", old_level, lvl)
+            return False
         self.current_level = lvl
         self.audit_log.append({
             "ts": time.time(),
             "event": "level_changed",
             "from": old_level,
             "to": lvl,
+            "user_confirmed": not require_user_confirmation,
         })
         self._save_state()
         log.info("Consent level updated: %s -> %s", old_level, lvl)

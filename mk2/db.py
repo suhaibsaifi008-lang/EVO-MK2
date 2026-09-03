@@ -129,6 +129,18 @@ CREATE TABLE IF NOT EXISTS kv (
     val TEXT NOT NULL,
     updated_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS memory_graph (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    relation TEXT NOT NULL,
+    target TEXT NOT NULL,
+    context TEXT DEFAULT '',
+    confidence REAL DEFAULT 1.0,
+    created_at REAL NOT NULL,
+    UNIQUE(source, relation, target) ON CONFLICT REPLACE
+);
+CREATE INDEX IF NOT EXISTS idx_mem_graph_source ON memory_graph(source);
+CREATE INDEX IF NOT EXISTS idx_mem_graph_target ON memory_graph(target);
 """
 
 
@@ -137,6 +149,9 @@ def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA wal_autocheckpoint=1000")
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
@@ -175,7 +190,7 @@ def log_message(role: str, content: str, surface: str = "console") -> int:
         )
         row_id = int(cur.lastrowid or 0)
         if row_id % 100 == 0:  # only check every 100 inserts
-            c.execute("DELETE FROM messages WHERE id <= (SELECT MAX(id)-5000 FROM messages)")
+            c.execute("DELETE FROM messages WHERE id NOT IN (SELECT id FROM messages ORDER BY id DESC LIMIT 5000)")
         return row_id
 
 
@@ -193,15 +208,18 @@ def clear_messages() -> None:
 
 
 def remember_fact(key: str, value: str, source: str = "explicit") -> None:
-    key = key.strip().lower()[:80]
-    if not key:
+    if not key or value is None:
+        return
+    key = str(key).strip().lower()[:80]
+    val_str = str(value).strip()
+    if not key or not val_str or val_str.lower() in ("none", "null"):
         return
     with _lock, connect() as c:
         c.execute(
             "INSERT INTO facts(key,value,source,updated_at) VALUES(?,?,?,?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value, source=excluded.source,"
             " updated_at=excluded.updated_at",
-            (key, value[:400], source, time.time()),
+            (key, val_str[:400], source, time.time()),
         )
 
 
@@ -215,7 +233,7 @@ def forget_fact(key: str) -> bool:
 def all_facts(limit: int = 40) -> list[dict]:
     with _lock, connect() as c:
         rows = c.execute(
-            "SELECT key,value,updated_at FROM facts ORDER BY updated_at DESC LIMIT ?", (limit,)
+            "SELECT key,value,source,updated_at FROM facts ORDER BY updated_at DESC LIMIT ?", (limit,)
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -224,7 +242,7 @@ def search_facts(query: str, limit: int = 6) -> list[dict]:
     like = f"%{query.strip().lower()}%"
     with _lock, connect() as c:
         rows = c.execute(
-            "SELECT key,value FROM facts WHERE key LIKE ? OR value LIKE ? "
+            "SELECT key,value,source,updated_at FROM facts WHERE key LIKE ? OR value LIKE ? "
             "ORDER BY updated_at DESC LIMIT ?", (like, like, limit),
         ).fetchall()
     return [dict(r) for r in rows]
@@ -408,14 +426,17 @@ def proposal_set_status(pid: int, status: str) -> bool:
 
 
 def record_event(topic: str, payload: dict | str) -> None:
-    """Journal an event into SQLite for diagnostics and crash recovery."""
+    """Journal an event into SQLite for diagnostics and crash recovery with rolling retention."""
     payload_str = payload if isinstance(payload, str) else json.dumps(payload)
     try:
         with _lock, connect() as c:
-            c.execute(
+            cur = c.execute(
                 "INSERT INTO events(topic, payload, created_at) VALUES(?, ?, ?)",
                 (topic, payload_str, time.time())
             )
+            row_id = int(cur.lastrowid or 0)
+            if row_id % 100 == 0:
+                c.execute("DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT 5000)")
     except Exception as exc:
         log.warning('db.record_event: %s', exc)
         pass
@@ -536,15 +557,24 @@ def all_anecdotes(limit: int = 20) -> list[dict]:
 
 
 def import_messages(messages_list: list[dict]) -> int:
-    """Bulk import messages for cross-device state sync."""
+    """Bulk import messages for cross-device state sync with validation (H14)."""
     imported = 0
+    now = time.time()
     try:
         with _lock, connect() as c:
             for m in messages_list:
-                role = m.get("role", "user")
-                content = m.get("content", "")
-                surface = m.get("surface", "sync")
-                ts = m.get("ts", time.time())
+                role = str(m.get("role", "user")).strip().lower()
+                if role not in ("user", "assistant", "system"):
+                    role = "user"
+                content = str(m.get("content", "")).strip()[:10000]
+                surface = str(m.get("surface", "sync"))[:50]
+                try:
+                    ts = float(m.get("ts", now))
+                    # Sanity check: cannot be in future (> now + 3600) or older than year 2020
+                    if ts > now + 3600 or ts < 1577836800:
+                        ts = now
+                except Exception:
+                    ts = now
                 if content:
                     c.execute(
                         "INSERT INTO messages (role, content, surface, ts) VALUES (?, ?, ?, ?)",

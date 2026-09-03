@@ -1,6 +1,7 @@
-﻿"""Hybrid TTS: instant local SAPI for short lines, neural edge-tts for long."""
+"""Hybrid TTS: instant local SAPI for short lines, neural edge-tts for long."""
 import asyncio
 import hashlib
+import logging
 import os
 import re
 import subprocess
@@ -9,6 +10,8 @@ import time
 from pathlib import Path
 
 from ..config import DATA
+
+log = logging.getLogger("mk2.voice.tts")
 
 TTS_DIR = DATA / "tts"
 TTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -96,7 +99,10 @@ def _sapi_voice_clause() -> str:
     want = os.environ.get("EVO_SAPI_VOICE", "").strip()
     if not want:
         return ""
-    safe = want.replace("'", "''")
+    import re
+    safe = re.sub(r"[^\w\s\-]", "", want).strip()
+    if not safe:
+        return ""
     try:
         match = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command",
@@ -105,7 +111,9 @@ def _sapi_voice_clause() -> str:
             capture_output=True, text=True, timeout=10,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout.strip()
         if match:
-            return f"$s.SelectVoice('{match}');"
+            safe_match = re.sub(r"[^\w\s\-]", "", match).strip().replace("'", "''")
+            if safe_match:
+                return f"$s.SelectVoice('{safe_match}');"
     except Exception:
         pass
     return ""
@@ -119,25 +127,27 @@ def _sapi_wav(text: str) -> Path | None:
     if out.exists() and out.stat().st_size > 512:
         return out
     tmp = out.with_suffix(".part")
-    safe = text.replace("'", "''")
+    import base64
     ps = (
-        "Add-Type -AssemblyName System.Speech;"
-        "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer;"
-        "$s.Rate = " + str(_sapi_rate()) + ";"
-        + _sapi_voice_clause() +
-        f"$s.SetOutputToWaveFile('{tmp}');"
-        f"$s.Speak('{safe}');"
-        "$s.Dispose()"
+        "Add-Type -AssemblyName System.Speech;\n"
+        "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer;\n"
+        f"$s.Rate = {_sapi_rate()};\n"
+        + _sapi_voice_clause() + "\n"
+        + f"$s.SetOutputToWaveFile(@'\n{tmp}\n'@);\n"
+        + f"$s.Speak(@'\n{text}\n'@);\n"
+        + "$s.Dispose()"
     )
+    encoded_cmd = base64.b64encode(ps.encode("utf-16le")).decode("ascii")
     try:
         subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+            ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded_cmd],
             check=True, capture_output=True,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=60,
         )
         tmp.replace(out)
         return out
     except Exception:
+        tmp.unlink(missing_ok=True)
         return None
 
 
@@ -196,6 +206,8 @@ def _elevenlabs_mp3(text: str, stop: threading.Event) -> Path | None:
                 return out
     except Exception as exc:
         log.debug("ElevenLabs synthesis skipped/failed: %s", exc)
+        tmp = out.with_suffix(".part")
+        tmp.unlink(missing_ok=True)
     return None
 
 
@@ -217,10 +229,21 @@ def _edge_mp3(text: str, stop: threading.Event) -> Path | None:
                                        rate=_edge_rate())
             await asyncio.wait_for(com.save(str(tmp)), timeout=25)
 
-        asyncio.run(gen())
-        if tmp.exists() and tmp.stat().st_size > 256:
-            tmp.replace(out)
-            return out
+        try:
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(gen())
+            finally:
+                loop.close()
+            if tmp.exists() and tmp.stat().st_size > 256:
+                tmp.replace(out)
+                return out
+        finally:
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except Exception:
+                    pass
     except Exception:
         pass
     return None
@@ -233,7 +256,9 @@ def _edge_mp3(text: str, stop: threading.Event) -> Path | None:
 PIPER_DIR = DATA / "models" / "piper"
 _PIPER_LOCK = threading.Lock()
 _piper_voice = None          # loaded singleton
-_piper_failed = False        # sticky: never retry a broken install per-process
+_piper_failed = False        # set on broken install, resets after cooldown
+_piper_failed_ts = 0.0       # timestamp of last failure
+_PIPER_COOLDOWN = 300        # retry after 5 minutes
 
 
 def _piper_repo() -> str:
@@ -276,12 +301,19 @@ def _piper_load():
 
 
 def piper_available() -> bool:
+    global _piper_failed, _piper_failed_ts
+    with _PIPER_LOCK:
+        if _piper_failed:
+            if (time.time() - _piper_failed_ts) < _PIPER_COOLDOWN:
+                return False
+            _piper_failed = False  # cooldown expired, retry
     try:
         _piper_load()
         return True
     except Exception as exc:  # noqa: BLE001
-        global _piper_failed
-        _piper_failed = True
+        with _PIPER_LOCK:
+            _piper_failed = True
+            _piper_failed_ts = time.time()
         print(f"[tts] piper unavailable: {str(exc)[:160]}", flush=True)
         return False
 
@@ -303,7 +335,7 @@ def _piper_wav(text: str) -> Path | None:
     text = sanitize_speech(text)
     if not text:
         return None
-    key = hashlib.sha1(("piper|" + text).encode()).hexdigest()[:20] + ".wav"
+    key = hashlib.sha1(f"piper|{_piper_repo()}|{_piper_voice_file()}|{text}".encode()).hexdigest()[:20] + ".wav"
     out = TTS_DIR / key
     if out.exists() and out.stat().st_size > 512:
         return out
@@ -311,7 +343,7 @@ def _piper_wav(text: str) -> Path | None:
 
     try:
         voice = _piper_load()
-        chunks = list(voice.synthesize(text[:600]))
+        chunks = list(voice.synthesize(text[:3500]))
         if not chunks:
             return None
         sr = chunks[0].sample_rate
@@ -328,6 +360,8 @@ def _piper_wav(text: str) -> Path | None:
         return out
     except Exception as exc:  # noqa: BLE001
         print(f"[tts] piper synth failed: {str(exc)[:120]}", flush=True)
+        tmp = out.with_suffix(".part")
+        tmp.unlink(missing_ok=True)
         return None
 
 
@@ -337,16 +371,18 @@ def _mci_play(path: Path, stop: threading.Event, alias: str) -> bool:
     winmm = ctypes.windll.winmm
     if winmm.mciSendStringW(f'open "{path}" type mpegvideo alias {alias}', None, 0, 0) != 0:
         return False
-    winmm.mciSendStringW(f"play {alias}", None, 0, 0)
-    buf = ctypes.create_unicode_buffer(64)
-    while True:
-        if stop.is_set():
-            break
-        winmm.mciSendStringW(f"status {alias} mode", buf, 64, 0)
-        if buf.value.strip().lower() != "playing":
-            break
-        time.sleep(0.12)
-    winmm.mciSendStringW(f"close {alias}", None, 0, 0)
+    try:
+        winmm.mciSendStringW(f"play {alias}", None, 0, 0)
+        buf = ctypes.create_unicode_buffer(64)
+        while True:
+            if stop.is_set():
+                break
+            winmm.mciSendStringW(f"status {alias} mode", buf, 64, 0)
+            if buf.value.strip().lower() != "playing":
+                break
+            time.sleep(0.12)
+    finally:
+        winmm.mciSendStringW(f"close {alias}", None, 0, 0)
     return True
 
 class Speaker:
@@ -355,20 +391,45 @@ class Speaker:
         self._thread: threading.Thread | None = None
         self._n = 0
         self._active = False          # True from say() until playback ends
+        self._current_alias: str | None = None
+        self._lock = threading.Lock()
 
     def say(self, text: str) -> threading.Event:
         """Speak text; returns the stop Event (set it to cut speech)."""
-        self.stop_evt.clear()
-        self._active = True
-        self._thread = threading.Thread(
-            target=self._speak, args=(text, self.stop_evt), daemon=True,
-            name="mk2-tts"
-        )
-        self._thread.start()
-        return self.stop_evt
+        with self._lock:
+            # Cut off any currently playing speech immediately
+            self.stop_evt.set()
+            if self._current_alias:
+                try:
+                    import ctypes
+                    ctypes.windll.winmm.mciSendStringW(f"stop {self._current_alias}", None, 0, 0)
+                    ctypes.windll.winmm.mciSendStringW(f"close {self._current_alias}", None, 0, 0)
+                except Exception:
+                    pass
+                self._current_alias = None
+            self.stop_evt = threading.Event()
+            stop = self.stop_evt
+            self._active = True
+            self._thread = threading.Thread(
+                target=self._speak, args=(text, stop), daemon=True,
+                name="mk2-tts"
+            )
+            self._thread.start()
+            return stop
 
     def shut_up(self) -> None:
-        self.stop_evt.set()
+        """Immediately cut off all active audio output and signals."""
+        with self._lock:
+            self.stop_evt.set()
+            self._active = False
+            if self._current_alias:
+                try:
+                    import ctypes
+                    ctypes.windll.winmm.mciSendStringW(f"stop {self._current_alias}", None, 0, 0)
+                    ctypes.windll.winmm.mciSendStringW(f"close {self._current_alias}", None, 0, 0)
+                except Exception:
+                    pass
+                self._current_alias = None
 
     @property
     def is_speaking(self) -> bool:
@@ -377,38 +438,59 @@ class Speaker:
         return self._active
 
     def _speak(self, text: str, stop: threading.Event) -> None:
-        text = sanitize_speech(" ".join((text or "").split())[:600])
-        if not text or stop.is_set():
-            return
-        self._n += 1
-        alias = f"mk2{self._n}{int(time.time()*1000)%100000}"
-        engine = os.environ.get("EVO_TTS_ENGINE", "auto")
-        path = None
-        if engine in ("auto", "elevenlabs") and not stop.is_set():
-            path = _elevenlabs_mp3(text, stop)
-        if path is None and engine in ("auto", "piper") and not stop.is_set():
-            path = _piper_wav(text)
-        if path is None and engine in ("auto", "edge") and not stop.is_set():
-            path = _edge_mp3(text, stop)
-        if path is None and engine in ("auto", "sapi"):
-            path = _sapi_wav(text)
-        if path is None:
-            return
-        ext = path.suffix.lower()
-        ttype = "waveaudio" if ext == ".wav" else "mpegvideo"
-        import ctypes
+        alias = None
+        try:
+            text = sanitize_speech(" ".join((text or "").split())[:3500])
+            if not text or stop.is_set():
+                return
+            with self._lock:
+                self._n += 1
+                cur_n = self._n
+            alias = f"mk2_{cur_n}_{int(time.time()*1000)%1000000}"
+            engine = os.environ.get("EVO_TTS_ENGINE", "auto")
+            path = None
+            if engine in ("auto", "elevenlabs") and not stop.is_set():
+                path = _elevenlabs_mp3(text, stop)
+            if path is None and engine in ("auto", "piper") and not stop.is_set():
+                path = _piper_wav(text)
+            if path is None and engine in ("auto", "edge") and not stop.is_set():
+                path = _edge_mp3(text, stop)
+            if path is None and engine in ("auto", "sapi"):
+                path = _sapi_wav(text)
+            if path is None or stop.is_set():
+                return
+            ext = path.suffix.lower()
+            ttype = "waveaudio" if ext == ".wav" else "mpegvideo"
+            import ctypes
 
-        winmm = ctypes.windll.winmm
-        if winmm.mciSendStringW(f'open "{path}" type {ttype} alias {alias}', None, 0, 0) != 0:
-            return
-        winmm.mciSendStringW(f"play {alias}", None, 0, 0)
-        buf = ctypes.create_unicode_buffer(64)
-        while not stop.is_set():
-            winmm.mciSendStringW(f"status {alias} mode", buf, 64, 0)
-            if buf.value.strip().lower() != "playing":
-                break
-            time.sleep(0.12)
-        winmm.mciSendStringW(f"close {alias}", None, 0, 0)
+            winmm = ctypes.windll.winmm
+            if winmm.mciSendStringW(f'open "{path}" type {ttype} alias {alias}', None, 0, 0) != 0:
+                return
+            with self._lock:
+                if stop.is_set():
+                    winmm.mciSendStringW(f"close {alias}", None, 0, 0)
+                    return
+                self._current_alias = alias
+            winmm.mciSendStringW(f"play {alias}", None, 0, 0)
+            buf = ctypes.create_unicode_buffer(64)
+            while not stop.is_set():
+                winmm.mciSendStringW(f"status {alias} mode", buf, 64, 0)
+                if buf.value.strip().lower() != "playing":
+                    break
+                time.sleep(0.08)
+        except Exception as exc:
+            log.warning("Speaker._speak error: %s", exc)
+        finally:
+            with self._lock:
+                if self._current_alias == alias:
+                    self._current_alias = None
+                self._active = False
+            if alias:
+                try:
+                    import ctypes
+                    ctypes.windll.winmm.mciSendStringW(f"close {alias}", None, 0, 0)
+                except Exception:
+                    pass
 
     @staticmethod
     def cleanup(max_files: int = 200) -> None:

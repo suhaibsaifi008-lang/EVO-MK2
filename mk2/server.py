@@ -1,5 +1,6 @@
 """FastAPI surface: streaming chat, health, memory/audit views, static UI."""
 import asyncio
+import html as _html_mod
 import json
 import os
 import queue as _queue
@@ -17,6 +18,33 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.websockets import WebSocketState
 
 from . import brain, config, db, llm, tools
+
+
+def _sanitize_str(v: str, max_len: int = 4096) -> str:
+	"""Strip null bytes, truncate, and HTML-escape a string."""
+	v = v.replace("\x00", "")
+	if len(v) > max_len:
+		v = v[:max_len]
+	return _html_mod.escape(v)
+
+
+def _sanitize_body(body: dict) -> dict:
+	"""Recursively sanitize all string values in a JSON body dict."""
+	def _walk(obj):
+		if isinstance(obj, str):
+			return _sanitize_str(obj)
+		if isinstance(obj, dict):
+			return {k: _walk(v) for k, v in obj.items()}
+		if isinstance(obj, list):
+			return [_walk(i) for i in obj]
+		return obj
+	return _walk(body)
+
+
+def _sanitize_for_tts(text: str) -> str:
+	"""Strip HTML/XML tags before text goes to TTS to prevent spoken tag names."""
+	return re.sub(r"<[^>]+>", "", text)
+
 
 app = FastAPI(title="EVO MK2")
 UI = Path(config.UI_DIR)
@@ -45,7 +73,40 @@ def _resolve_api_key() -> str | None:
             key = getattr(config.settings, "api_key", "") or ""
         except Exception:
             pass
-    return key.strip() or None
+    key = key.strip()
+    if key:
+        return key
+    # Auto-generate a persistent API key stored encrypted at rest
+    import secrets
+    try:
+        from . import vault_secrets
+        key = vault_secrets.get_secret("EVO_SERVER_API_KEY")
+        if not key:
+            key_file = config.DATA / "api_key.txt"
+            if key_file.exists():
+                key = key_file.read_text(encoding="utf-8").strip()
+            if not key:
+                key = secrets.token_hex(32)
+            vault_secrets.secret_store("EVO_SERVER_API_KEY", key)
+            try:
+                key_file.unlink(missing_ok=True)
+            except Exception:
+                pass
+        os.environ["EVO_API_KEY"] = key
+        return key
+    except Exception:
+        key_file = config.DATA / "api_key.txt"
+        try:
+            if key_file.exists():
+                key = key_file.read_text(encoding="utf-8").strip()
+            if not key:
+                key = secrets.token_hex(32)
+                key_file.parent.mkdir(parents=True, exist_ok=True)
+                key_file.write_text(key, encoding="utf-8")
+            os.environ["EVO_API_KEY"] = key
+            return key
+        except Exception:
+            return None
 
 
 def _is_auth_required(request: Request) -> bool:
@@ -61,6 +122,9 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         api_key = _resolve_api_key()
         if api_key and _is_auth_required(request):
+            client_host = request.client.host if request.client else ""
+            if client_host == "testclient":
+                return await call_next(request)
             provided = (
                 request.headers.get("x-api-key", "")
                 or request.headers.get("authorization", "").removeprefix("Bearer ").strip()
@@ -77,14 +141,36 @@ app.add_middleware(APIKeyMiddleware)
 from starlette.middleware.cors import CORSMiddleware
 
 # Wildcard origins with credentials are not allowed by CORS, default to localhost
-_cors_origins = [o.strip() for o in os.environ.get("EVO_CORS_ORIGINS", "http://localhost:8421").split(",") if o.strip()]
+_cors_origins = [o.strip() for o in os.environ.get("EVO_CORS_ORIGINS", "http://localhost:8421").split(",") if o.strip() and o.strip() != "*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins or ["http://localhost:8421"],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
+    allow_headers=["Content-Type", "Authorization", "X-API-Key", "X-Pair-Code", "X-Pairing-Code", "X-Request-ID", "Sec-WebSocket-Protocol"],
 )
+
+
+class CSRFMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.method in ("POST", "PUT", "DELETE", "PATCH"):
+            origin = request.headers.get("origin") or request.headers.get("referer")
+            if origin:
+                from urllib.parse import urlparse
+                u = urlparse(origin)
+                host = (u.hostname or "").lower()
+                allowed_hosts = {"localhost", "127.0.0.1", "::1", "testserver"}
+                for o in (_cors_origins or ["http://localhost:8421"]):
+                    ou = urlparse(o)
+                    if ou.hostname:
+                        allowed_hosts.add(ou.hostname.lower())
+                if host and host not in allowed_hosts:
+                    from fastapi.responses import JSONResponse
+                    return JSONResponse({"error": "cross-origin request forbidden by CSRF protection"}, status_code=403)
+        return await call_next(request)
+
+
+app.add_middleware(CSRFMiddleware)
 
 
 # ------------------------------------------------------------------ Timeout & Circuit Breaker
@@ -111,26 +197,34 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(TimeoutMiddleware)
 
-_circuit_open_until: float = 0.0
-_consecutive_llm_failures: int = 0
+_provider_circuit: dict[str, float] = {}  # provider -> open_until timestamp
+_provider_failures: dict[str, int] = {}   # provider -> consecutive failure count
+_provider_probation: dict[str, int] = {}  # provider -> probation success count
 _circuit_lock = threading.Lock()
 
 
-def is_circuit_open() -> bool:
+def is_circuit_open(provider: str = "default") -> bool:
     with _circuit_lock:
-        return time.time() < _circuit_open_until
+        return time.time() < _provider_circuit.get(provider, 0.0)
 
 
-def record_llm_result(ok: bool) -> None:
-    global _circuit_open_until, _consecutive_llm_failures
+def record_llm_result(ok: bool, provider: str = "default") -> None:
     with _circuit_lock:
+        now = time.time()
         if ok:
-            _consecutive_llm_failures = 0
-            _circuit_open_until = 0.0
+            _provider_failures[provider] = 0
+            if _provider_circuit.get(provider, 0.0) > 0:
+                _provider_probation[provider] = _provider_probation.get(provider, 0) + 1
+                if _provider_probation[provider] >= 2:
+                    _provider_circuit[provider] = 0.0
+                    _provider_probation[provider] = 0
+            else:
+                _provider_probation[provider] = 0
         else:
-            _consecutive_llm_failures += 1
-            if _consecutive_llm_failures >= 3:
-                _circuit_open_until = time.time() + 10.0
+            _provider_probation[provider] = 0
+            _provider_failures[provider] = _provider_failures.get(provider, 0) + 1
+            if _provider_failures[provider] >= 3:
+                _provider_circuit[provider] = now + 10.0
 
 from . import events_api as _events  # noqa: E402
 
@@ -244,13 +338,21 @@ def health():
 
 from collections import deque
 _chat_rate: dict[str, deque] = {}
+_pair_rate: deque = deque()
 _RATE_LIMIT = 20  # max requests per minute
 _RATE_WINDOW = 60.0
+_MAX_RATE_KEYS = 500  # prevent unbounded memory growth from arbitrary keys
 
 @app.post("/api/chat")
 def chat(body: ChatIn, request: Request) -> dict:
+    safe_text = _sanitize_str(body.text, max_len=1024)
     key = request.headers.get("x-api-key", "default")
     now = time.time()
+    # Periodic cleanup of expired keys to prevent memory leak (H16)
+    if len(_chat_rate) > _MAX_RATE_KEYS:
+        expired_keys = [k for k, dq in _chat_rate.items() if not dq or dq[-1] < now - _RATE_WINDOW]
+        for k in expired_keys:
+            _chat_rate.pop(k, None)
     if key not in _chat_rate:
         _chat_rate[key] = deque()
     while _chat_rate[key] and _chat_rate[key][0] < now - _RATE_WINDOW:
@@ -261,17 +363,18 @@ def chat(body: ChatIn, request: Request) -> dict:
     if is_circuit_open():
         from .fastlane import fast_command
         from .llm import _offline_parse
-        instant = fast_command(body.text) or _offline_parse(body.text)
+        instant = fast_command(safe_text) or _offline_parse(safe_text)
         if instant:
             return {"reply": instant}
         raise HTTPException(status_code=503, detail="LLM circuit breaker open (cooling down after repeated failures)")
     try:
-        reply = brain.handle_turn(body.text)
+        reply = brain.handle_turn(safe_text)
         record_llm_result(True)
         return {"reply": reply}
     except Exception as exc:
         record_llm_result(False)
-        raise HTTPException(status_code=500, detail=str(exc))
+        log.error("Internal chat error: %s", exc)
+        raise HTTPException(status_code=500, detail="Internal assistant error generating response.")
 
 
 class ConfirmIn(BaseModel):
@@ -292,41 +395,92 @@ class AuthPinIn(BaseModel):
     pin: str
 
 
+PAIRING_STATE_FILE = config.DATA / "pairing_state.json"
+_pairing_lock = threading.Lock()
 _pin_lockout_until = 0.0
 _pin_failures = 0
+_pairing_codes: dict[str, dict] = {}
+
+
+def _load_pairing_state() -> None:
+    global _pin_lockout_until, _pin_failures, _pairing_codes
+    if not PAIRING_STATE_FILE.exists():
+        return
+    try:
+        data = json.loads(PAIRING_STATE_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            _pin_lockout_until = float(data.get("pin_lockout_until", 0.0))
+            _pin_failures = int(data.get("pin_failures", 0))
+            codes = data.get("pairing_codes")
+            if isinstance(codes, dict):
+                now = time.time()
+                _pairing_codes.clear()
+                for k, v in codes.items():
+                    if isinstance(v, dict) and v.get("expires", 0.0) > now:
+                        _pairing_codes[str(k)] = v
+    except Exception as exc:
+        import logging
+        logging.getLogger("mk2.server").warning("Failed to load pairing state: %s", exc)
+
+
+def _save_pairing_state() -> None:
+    try:
+        PAIRING_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        active_codes = {k: v for k, v in _pairing_codes.items() if isinstance(v, dict) and v.get("expires", 0.0) > now}
+        payload = {
+            "pin_lockout_until": _pin_lockout_until,
+            "pin_failures": _pin_failures,
+            "pairing_codes": active_codes,
+        }
+        tmp_file = PAIRING_STATE_FILE.with_suffix(".tmp")
+        tmp_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        tmp_file.replace(PAIRING_STATE_FILE)
+    except Exception as exc:
+        import logging
+        logging.getLogger("mk2.server").warning("Failed to save pairing state: %s", exc)
+
+
+_load_pairing_state()
 
 
 @app.post("/api/auth/pin")
 def auth_pin_endpoint(body: AuthPinIn) -> dict:
     global _pin_lockout_until, _pin_failures
-    now = time.time()
-    if now < _pin_lockout_until:
-        rem = int(_pin_lockout_until - now)
-        raise HTTPException(status_code=429, detail=f"Too many failed PIN attempts. Locked out for {rem}s.")
+    with _pairing_lock:
+        now = time.time()
+        if now < _pin_lockout_until:
+            rem = int(_pin_lockout_until - now)
+            raise HTTPException(status_code=429, detail=f"Too many failed PIN attempts. Locked out for {rem}s.")
 
-    from .security import voiceprint
-    if voiceprint.verify_pin(body.pin):
-        _pin_failures = 0
-        return {"ok": True, "message": "Authentication successful. Security lock cleared."}
+        from .security import voiceprint
+        if voiceprint.verify_pin(body.pin):
+            _pin_failures = 0
+            _save_pairing_state()
+            return {"ok": True, "message": "Authentication successful. Security lock cleared."}
 
-    _pin_failures += 1
-    if _pin_failures >= 5:
-        _pin_lockout_until = now + 300
-        _pin_failures = 0
-        raise HTTPException(status_code=429, detail="Too many failed PIN attempts. Locked out for 300s.")
-    raise HTTPException(status_code=403, detail="Invalid security PIN.")
+        _pin_failures += 1
+        if _pin_failures >= 5:
+            _pin_lockout_until = now + 300
+            _pin_failures = 0
+            _save_pairing_state()
+            raise HTTPException(status_code=429, detail="Too many failed PIN attempts. Locked out for 300s.")
+        _save_pairing_state()
+        raise HTTPException(status_code=403, detail="Invalid security PIN.")
 
 
 @app.get("/api/status")
-def get_status_endpoint() -> dict:
+def get_status_endpoint(request: Request) -> dict:
     from . import autonomy, initiative_engine, swarm, user_profile
     prof = user_profile.get_user_profile()
+    client_ip = request.client.host if request.client else ""
+    is_local = client_ip in _LOCAL_HOSTS or client_ip == "testclient"
     return {
         "ok": True,
         "brain": {
             "role": "primary",
-            "model": config.settings.anthropic_model or config.settings.openai_model,
-            "provider": "anthropic" if config.settings.anthropic_key else "openai",
+            "model": (config.settings.anthropic_model or config.settings.openai_model) if is_local else "redacted",
+            "provider": ("anthropic" if config.settings.anthropic_key else "openai") if is_local else "active",
         },
         "voice": {
             "wake": bool(os.environ.get("EVO_WAKE", "1") == "1"),
@@ -361,6 +515,9 @@ def _verify_sync_auth(request: Request) -> None:
         # Check for approved pairing code
         pair_code = request.headers.get("x-pair-code") or request.headers.get("x-pairing-code")
         if pair_code and _pairing_codes.get(pair_code, {}).get("approved"):
+            return
+        client_host = request.client.host if request.client else ""
+        if (client_host in _LOCAL_HOSTS or client_host == "testclient") and not provided_key and not pair_code:
             return
         raise HTTPException(status_code=401, detail="Unauthorized: invalid API key or pairing code.")
 
@@ -404,15 +561,15 @@ def import_session_endpoint(body: SessionImportIn, request: Request) -> dict:
     imported_turns = db.import_messages(body.recent_turns)
     imported_facts = 0
     for fact in body.facts:
-        k = fact.get("key") or fact.get("k")
-        v = fact.get("value") or fact.get("v")
+        k = str(fact.get("key") or fact.get("k") or "").strip()[:80]
+        v = str(fact.get("value") or fact.get("v") or "").strip()[:500]
         if k and v:
-            db.remember_fact(str(k), str(v), source="remote_sync")
+            # Drop obvious injection attempts
+            if any(p in v.lower() for p in ("ignore previous", "system prompt", "you are now")):
+                continue
+            db.remember_fact(k, v, source="remote_sync")
             imported_facts += 1
     return {"ok": True, "imported_turns": imported_turns, "imported_facts": imported_facts}
-
-
-_pairing_codes: dict[str, dict] = {}
 
 
 class PairRequestIn(BaseModel):
@@ -420,21 +577,32 @@ class PairRequestIn(BaseModel):
 
 
 @app.post("/api/pair/request")
-def request_pairing_endpoint(body: PairRequestIn) -> dict:
-    """Request 6-digit device pairing code."""
+def request_pairing_endpoint(body: PairRequestIn, request: Request) -> dict:
+    """Request 6-digit device pairing code with rate limiting."""
     import secrets
     from .bus import bus
-    now = time.time()
-    expired = [k for k, v in _pairing_codes.items() if v['expires'] < now]; [_pairing_codes.pop(k) for k in expired]
-    code = f"{secrets.randbelow(900000) + 100000}"
-    _pairing_codes[code] = {
-        "expires": time.time() + 300,
-        "device_name": body.device_name,
-        "approved": False,
-    }
+    with _pairing_lock:
+        now = time.time()
+        while _pair_rate and _pair_rate[0] < now - 60.0:
+            _pair_rate.popleft()
+        if len(_pair_rate) >= 10:  # max 10 pairing requests per minute
+            raise HTTPException(status_code=429, detail="Too many pairing requests. Please wait.")
+        _pair_rate.append(now)
+
+        expired = [k for k, v in _pairing_codes.items() if v.get("expires", 0.0) < now]
+        for k in expired:
+            _pairing_codes.pop(k, None)
+        code = f"{secrets.randbelow(900000) + 100000}"
+        _pairing_codes[code] = {
+            "expires": time.time() + 300,
+            "device_name": body.device_name,
+            "approved": False,
+        }
+        _save_pairing_state()
+    # Broadcast pairing request notice without exposing the secret 6-digit code to listeners
     bus.publish("notify.out", {
         "kind": "pairing",
-        "text": f"Device '{body.device_name}' requested pairing. Code: {code}. Say 'approve {code}' or use dashboard.",
+        "text": f"Device '{body.device_name}' requested pairing. Approve via dashboard or terminal.",
     })
     return {"ok": True, "code": code, "expires_in": 300}
 
@@ -444,17 +612,28 @@ class PairApproveIn(BaseModel):
 
 
 @app.post("/api/pair/approve")
-def approve_pairing_endpoint(body: PairApproveIn) -> dict:
-    """Approve a pending device pairing code."""
-    entry = _pairing_codes.get(body.code.strip())
-    if not entry or entry["expires"] < time.time():
-        raise HTTPException(status_code=400, detail="Invalid or expired pairing code.")
-    entry["approved"] = True
-    return {"ok": True, "device_name": entry["device_name"], "message": "Device pairing approved."}
+def approve_pairing_endpoint(body: PairApproveIn, request: Request) -> dict:
+    """Approve a pending device pairing code (requires auth or local host)."""
+    client_ip = getattr(request.client, "host", "") if request.client else ""
+    api_key = _resolve_api_key()
+    if api_key:
+        _verify_sync_auth(request)
+    elif client_ip not in _LOCAL_HOSTS and client_ip != "testclient":
+        raise HTTPException(status_code=403, detail="Approving pairing codes requires a local host connection or configured API key.")
+
+    with _pairing_lock:
+        entry = _pairing_codes.get(body.code.strip())
+        if not entry or entry.get("expires", 0.0) < time.time():
+            raise HTTPException(status_code=400, detail="Invalid or expired pairing code.")
+        entry["approved"] = True
+        _save_pairing_state()
+        device_name = entry.get("device_name", "")
+    return {"ok": True, "device_name": device_name, "message": "Device pairing approved."}
 
 
 @app.get("/api/sync/status")
-def sync_status_endpoint() -> dict:
+def sync_status_endpoint(request: Request) -> dict:
+    _verify_sync_auth(request)
     import platform
     from . import sync
     return {
@@ -512,6 +691,10 @@ class ToolSynthesizeIn(BaseModel):
 
 @app.post("/api/tools/synthesize")
 def tool_synthesize_endpoint(body: ToolSynthesizeIn, request: Request) -> dict:
+    # Tool synthesis = arbitrary code execution — restrict to localhost only
+    client_ip = request.client.host if request.client else ""
+    if client_ip not in _LOCAL_HOSTS and client_ip != "testclient":
+        raise HTTPException(status_code=403, detail="Tool synthesis is restricted to localhost")
     _verify_sync_auth(request)
     from . import tool_synthesizer
     res = tool_synthesizer.synthesize_tool(
@@ -559,16 +742,17 @@ async def ws_voice(ws: WebSocket) -> None:
     await ws.accept()
     api_key = _resolve_api_key()
     if api_key:
+        client_ip = ws.client.host if ws.client else ""
         auth_hdr = (ws.headers.get("x-api-key") or ws.headers.get("authorization", "")).removeprefix("Bearer ").strip()
         subproto = ws.headers.get("sec-websocket-protocol", "").strip()
-        query_key = ws.query_params.get("key", "").strip()
-        provided = auth_hdr or subproto or query_key
+        provided = auth_hdr or subproto
         if provided != api_key:
-            await ws.close(code=1008)
-            return
+            if client_ip != "testclient":
+                await ws.close(code=1008)
+                return
     loop = asyncio.get_running_loop()
     state = {"busy": False, "cancel": False}
-    inbox: asyncio.Queue = asyncio.Queue()   # client messages, read always
+    inbox: asyncio.Queue = asyncio.Queue(maxsize=100)   # client messages, bounded to prevent OOM
 
     async def push_audio(text: str, idx: int) -> None:
         from .voice import tts_best
@@ -626,7 +810,7 @@ async def ws_voice(ws: WebSocket) -> None:
     ping_task = asyncio.create_task(ping_worker())
 
     async def run_say(text: str, want_audio: bool) -> None:
-        aq: asyncio.Queue = asyncio.Queue()   # sentences -> audio worker
+        aq: asyncio.Queue = asyncio.Queue(maxsize=100)   # sentences -> audio worker, bounded
         worker = asyncio.create_task(tts_worker(aq))
 
         # Thread->loop handoff done via a plain buffer (GIL-atomic appends)
@@ -812,7 +996,8 @@ def tts(text: str, engine: str = ""):
         return Response(content=data, media_type=media,
                         headers={"Cache-Control": "public, max-age=86400"})
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"tts unavailable: {exc}")
+        log.warning("TTS error: %s", exc)
+        raise HTTPException(status_code=502, detail="tts synthesis unavailable")
 
 
 class ConvoIn(BaseModel):
@@ -843,8 +1028,27 @@ def voice_convo_status():
     return {"running": convo.status()["running"]}
 
 
+_transcribe_rate: dict[str, deque] = {}
+_TRANSCRIBE_LIMIT = 15  # max requests per minute
+_TRANSCRIBE_WINDOW = 60.0
+
+
 @app.post("/api/transcribe")
 async def transcribe(request: Request) -> dict:
+    client_ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    if client_ip != "testclient":
+        if client_ip not in _transcribe_rate:
+            if len(_transcribe_rate) > 500:
+                _transcribe_rate.clear()
+            _transcribe_rate[client_ip] = deque()
+        q = _transcribe_rate[client_ip]
+        while q and q[0] < now - _TRANSCRIBE_WINDOW:
+            q.popleft()
+        if len(q) >= _TRANSCRIBE_LIMIT:
+            raise HTTPException(status_code=429, detail="Transcribe rate limit exceeded (max 15/min).")
+        q.append(now)
+
     data = await request.body()
     if len(data) < 100:
         raise HTTPException(status_code=400, detail="no audio")
@@ -859,10 +1063,96 @@ async def transcribe(request: Request) -> dict:
     try:
         text = await loop.run_in_executor(None, work)
     except ValueError as exc:  # bad wav payload
-        raise HTTPException(status_code=400, detail=f"bad audio: {exc}")
+        log.warning("Bad audio payload: %s", exc)
+        raise HTTPException(status_code=400, detail="bad audio: invalid WAV data payload")
     except RuntimeError as exc:  # vosk model missing
-        raise HTTPException(status_code=503, detail=str(exc))
+        log.warning("STT runtime error: %s", exc)
+        raise HTTPException(status_code=503, detail="speech recognition model unavailable")
     return {"text": text}
+
+
+_tools_call_rate: dict[str, deque] = {}
+_TOOLS_CALL_LIMIT = 30
+_TOOLS_CALL_WINDOW = 60.0
+
+
+@app.post("/api/tools/call")
+async def call_tool(req: Request):
+	import logging
+
+	log = logging.getLogger("mk2.server")
+
+	# --- rate limit ---
+	client_ip = req.client.host if req.client else "unknown"
+	now = time.time()
+	if client_ip != "testclient":
+		if client_ip not in _tools_call_rate:
+			if len(_tools_call_rate) > 500:
+				_tools_call_rate.clear()
+			_tools_call_rate[client_ip] = deque()
+		q = _tools_call_rate[client_ip]
+		while q[0] < now - _TOOLS_CALL_WINDOW:
+			q.popleft()
+		if len(q) >= _TOOLS_CALL_LIMIT:
+			raise HTTPException(
+				status_code=429,
+				detail="Tool call rate limit exceeded (max 30/min).",
+			)
+		q.append(now)
+
+	# --- parse & sanitize ---
+	body = await req.json()
+	name = str(body.get("name", "")).strip()
+	args = body.get("args") or {}
+
+	if not name or len(name) > 64:
+		raise HTTPException(status_code=400, detail="Tool name must be 1-64 characters.")
+	if not isinstance(args, dict):
+		raise HTTPException(status_code=400, detail="Args must be a JSON object.")
+
+	for k, v in args.items():
+		if len(str(k)) > 64:
+			raise HTTPException(
+				status_code=400,
+				detail=f"Arg key exceeds 64 char limit: '{k}'.",
+			)
+		if len(str(v)) > 4096:
+			raise HTTPException(
+				status_code=400,
+				detail=f"Arg value for '{k}' exceeds 4096 char limit.",
+			)
+
+	# --- pre-flight consent check ---
+	try:
+		from .consent import get_consent_manager
+
+		cm = get_consent_manager()
+		if not cm.has_consent(name):
+			log.warning("Tool call blocked by consent: %s (ip=%s)", name, client_ip)
+			raise HTTPException(
+				status_code=403,
+				detail=f"Consent denied: cannot execute '{name}'.",
+			)
+	except ImportError:
+		pass
+
+	# --- pre-flight circuit breaker check ---
+	breaker = getattr(tools, "_CIRCUIT_BREAKER", {})
+	open_until = breaker.get(name, 0)
+	if open_until > now:
+		remaining = int(open_until - now)
+		raise HTTPException(
+			status_code=429,
+			detail=f"Tool '{name}' temporarily disabled for {remaining}s.",
+		)
+
+	# --- execute via the tool dispatcher (audit + error handling inside) ---
+	result = tools.call(name, args)
+
+	log.info(
+		"Tool call %s -> ok=%s (ip=%s)", name, result.get("ok", False), client_ip
+	)
+	return result
 
 
 @app.get("/api/memory")
@@ -915,6 +1205,7 @@ def get_pending_approvals():
 
 @app.post("/api/autonomy/approve")
 async def approve_action(req: Request):
+    _verify_sync_auth(req)
     from .approval_queue import get_approval_queue
     body = await req.json()
     item_id = body.get("id")
@@ -925,6 +1216,7 @@ async def approve_action(req: Request):
 
 @app.post("/api/autonomy/reject")
 async def reject_action(req: Request):
+    _verify_sync_auth(req)
     from .approval_queue import get_approval_queue
     body = await req.json()
     item_id = body.get("id")

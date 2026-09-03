@@ -1,4 +1,4 @@
-﻿"""Local + cloud STT: realtime Vosk stream + two-grade PTT transcription.
+"""Local + cloud STT: realtime Vosk stream + two-grade PTT transcription.
 
 PTT entrypoint engine chain (EVO_STT_ENGINE):
     auto (default) -> 1. Gemini audio (top-tier accuracy, needs internet)
@@ -42,8 +42,15 @@ def ensure_model() -> Path | None:
         try:
             print("[stt] downloading", url.rsplit("/", 1)[-1], flush=True)
             urllib.request.urlretrieve(url, zipped)
+            if zipped.stat().st_size < 100_000:
+                raise ValueError("Downloaded archive too small or truncated")
             with zipfile.ZipFile(zipped) as zf:
                 inner = zf.namelist()[0].split("/")[0]
+                target_base = MODELS_DIR.resolve()
+                for member in zf.infolist():
+                    dest_path = (MODELS_DIR / member.filename).resolve()
+                    if not str(dest_path).startswith(str(target_base)):
+                        raise ValueError(f"Zip traversal detected: {member.filename}")
                 zf.extractall(MODELS_DIR)
             src = MODELS_DIR / inner
             if VOSK_DIR.exists():
@@ -200,7 +207,7 @@ def _bounded(fn, seconds: float):
     def runner():
         try:
             box["r"] = fn()
-        except BaseException as exc:  # noqa: BLE001
+        except Exception as exc:
             box["e"] = exc
     th = threading.Thread(target=runner, daemon=True)
     th.start()
@@ -221,7 +228,7 @@ def _transcribe_gemini(pcm: bytes) -> str:
         from google.genai import types
 
         model = os.environ.get("EVO_GEMINI_STT_MODEL",
-                               "gemini-3.6-flash").strip()
+                               "gemini-2.5-flash").strip()
         client = genai.Client(
             api_key=os.environ.get("GEMINI_API_KEY")
             or os.environ.get("JARVIS_GEMINI_KEY", ""))
@@ -229,21 +236,26 @@ def _transcribe_gemini(pcm: bytes) -> str:
         resp = client.models.generate_content(
             model=model,
             contents=["Transcribe this audio exactly. Output ONLY the "
-                      "transcribed words, nothing else.",
+                      "spoken words. No commentary, no punctuation besides "
+                      "periods, no extra text.",
                       types.Part.from_bytes(data=wav, mime_type="audio/wav")],
-            config=types.GenerateContentConfig(temperature=0.0),
         )
         return (resp.text or "").strip()
-
-    return _bounded(run, 20)
+    try:
+        return _bounded(run, seconds=15.0)
+    except Exception:
+        return ""
 
 
 def transcribe_wav(data: bytes) -> str:
     """PTT entrypoint. Engine chain per EVO_STT_ENGINE (default auto):
     whisper (1.3s local, proven accurate) -> gemini (top-tier ~4s) -> vosk.
     Set EVO_STT_ENGINE=gemini to force cloud-only."""
+    import os
     engine = os.environ.get("EVO_STT_ENGINE", "auto").lower().strip()
     pcm, rate = decode_wav(data)
+    if not pcm:
+        return ""
 
     if engine == "whisper":
         text = _transcribe_whisper(pcm)
@@ -255,15 +267,13 @@ def transcribe_wav(data: bytes) -> str:
     if engine == "vosk":
         return _transcribe_vosk(pcm)
 
-    # auto: whisper first (fast + offline). Gemini only rescues an ENGINE
-    # failure - never silence (gemini hallucinates words on noise).
+    # auto: whisper first (fast + offline). If not available or fails, try gemini, then vosk
     try:
         text = _transcribe_whisper(pcm)
         if text:
             return text
-        return ""                       # genuine silence -> say nothing
     except Exception:
-        pass                            # engine failure -> try gemini below
+        pass
     try:
         text = _transcribe_gemini(pcm)
         if text:
@@ -282,6 +292,7 @@ def decode_wav(data: bytes) -> tuple[bytes, int]:
     pos = 12
     rate = SAMPLE_RATE
     channels = 1
+    bits_per_sample = 16
     pcm = b""
     while pos + 8 <= len(data):
         chunk_id = data[pos:pos + 4]
@@ -291,11 +302,28 @@ def decode_wav(data: bytes) -> tuple[bytes, int]:
             _fmt, ch, rt = struct.unpack("<HHI", body[:8])
             channels = ch
             rate = rt
+            if len(body) >= 16:
+                (bits_per_sample,) = struct.unpack("<H", body[14:16])
         elif chunk_id == b"data":
             pcm = body
         pos += 8 + chunk_size + (chunk_size & 1)
     if not pcm:
         raise ValueError("no audio data")
+
+    if bits_per_sample == 8:
+        # 8-bit unsigned PCM -> 16-bit signed PCM
+        raw_samples = [(b - 128) * 256 for b in pcm]
+        pcm = struct.pack(f"<{len(raw_samples)}h", *raw_samples)
+    elif bits_per_sample == 24:
+        # 24-bit signed PCM -> 16-bit signed PCM (take upper 2 bytes of 3-byte sample)
+        samps = [struct.unpack("<i", pcm[i:i+3] + (b"\x00" if pcm[i+2] < 128 else b"\xff"))[0] >> 8 for i in range(0, len(pcm) - 2, 3)]
+        pcm = struct.pack(f"<{len(samps)}h", *[max(-32768, min(32767, s)) for s in samps])
+    elif bits_per_sample == 32:
+        # 32-bit signed PCM -> 16-bit signed PCM
+        samps = [s >> 16 for s in struct.unpack(f"<{len(pcm)//4}i", pcm[:len(pcm) - (len(pcm)%4)])]
+        pcm = struct.pack(f"<{len(samps)}h", *[max(-32768, min(32767, s)) for s in samps])
+    elif bits_per_sample != 16:
+        raise ValueError(f"unsupported sample bit depth: {bits_per_sample} (expected 8, 16, 24, or 32-bit PCM)")
 
     if channels > 1:
         import array

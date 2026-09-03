@@ -59,11 +59,15 @@ class Gateway:
 
     # ---------------- audio ----------------
 
+    _dropped_frames: int = 0
+
     def _callback(self, indata, frames, tinfo, status) -> None:
         try:
             self.audio_q.put_nowait(bytes(indata))
         except Exception:
-            pass
+            self._dropped_frames += 1
+            if self._dropped_frames % 100 == 1:
+                log.warning("Audio queue full — %d frames dropped so far", self._dropped_frames)
 
     @staticmethod
     def _rms(frame: bytes) -> float:
@@ -112,6 +116,12 @@ class Gateway:
             except Exception:
                 continue
 
+            # Echo suppression: skip processing speaker feedback
+            if self.speaker.is_speaking:
+                if self._rms(frame) > max(650.0, noise_floor * 2.5):
+                    self.barge_in_local()
+                continue
+
             # Phase 2: Energy VAD pre-filter to save CPU
             if not spotter.has_voice_energy(frame) and self.state == "sleeping":
                 continue
@@ -142,10 +152,15 @@ class Gateway:
             elif self.state == "session":
                 pass  # handled inside session loops
 
-        try:
-            self.stream.stop(); self.stream.close()
-        except Exception:
-            pass
+        if self.stream:
+            try:
+                self.stream.stop()
+            except Exception:
+                pass
+            try:
+                self.stream.close()
+            except Exception:
+                pass
 
     # ---------------- sessions ----------------
 
@@ -217,10 +232,13 @@ class Gateway:
                     return True
                 continue
             lvl = self._rms(frame)
-            noise_floor = 0.9 * noise_floor + 0.1 * lvl
-            # Barge-in: if user starts speaking while TTS is playing, interrupt TTS immediately
-            if self.speaker.is_speaking and lvl > max(500.0, noise_floor * 2.0):
-                self.barge_in_local()
+            # Barge-in and acoustic echo suppression
+            if self.speaker.is_speaking:
+                if lvl > max(650.0, noise_floor * 2.5):
+                    self.barge_in_local()
+                else:
+                    # Echo suppression: do not feed speaker output back into STT engine
+                    continue
 
             kind, text = stream.feed(frame)
             if not text:
@@ -273,9 +291,14 @@ class Gateway:
 
         def worker() -> None:
             try:
-                events = []
-                reply = brain.handle_turn(text, surface="voice",
-                                          on_event=lambda e: events.append(e))
+                from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    future = pool.submit(brain.handle_turn, text, surface="voice")
+                    try:
+                        reply = future.result(timeout=45)
+                    except FuturesTimeout:
+                        reply = "I'm sorry, that request took too long. Please try again."
+                        log.warning("Voice command timed out after 45s: %s", text[:60])
                 self.say_local(reply)
                 bus.publish("voice.command", {"text": text, "reply": reply})
             except Exception as exc:
@@ -298,19 +321,6 @@ class Gateway:
         except Exception:
             pass
 
-    @staticmethod
-    def _rms(frame: bytes) -> float:
-        import array
-
-        a = array.array("h", frame)
-        return (sum(s * s for s in a) / len(a)) ** 0.5 if a else 0.0
-
-    def _drain(self) -> None:
-        try:
-            while True:
-                self.audio_q.get_nowait()
-        except Exception:
-            pass
 
 
 def _is_instant_command(text: str) -> bool:

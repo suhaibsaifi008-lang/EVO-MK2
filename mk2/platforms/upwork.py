@@ -268,14 +268,14 @@ class UpworkAgent:
         if v.verdict == "block":
             return v
 
-        if is_first_contact and not user_approved:
+        if not user_approved:
             return MoralVerdict.caution(
-                f"First proposal to client '{client_id}' requires user review.",
-                risks=["first_time_client", "approval_required"],
+                f"Proposal to client '{client_id}' requires explicit user approval before submission.",
+                risks=["real_client_interaction", "approval_required"],
                 action=action_payload,
             )
 
-        if not self.consent.has_consent("proposal_submit") and not user_approved:
+        if not self.consent.has_consent("proposal_submit"):
             return MoralVerdict.caution("Submitting proposals requires explicit consent.", action=action_payload)
 
         self.proposals_sent_today += 1

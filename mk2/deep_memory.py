@@ -22,7 +22,7 @@ from .config import settings
 
 log = logging.getLogger("mk2.deep_memory")
 
-_lock = threading.Lock()
+_lock = threading.RLock()
 _engine = {"name": "", "dim": 0}
 
 HASH_DIM = 256
@@ -201,3 +201,138 @@ def search_episodes_tool(query: str, limit: int = 4) -> dict:
     speech = "; ".join(h["summary"][:80] for h in hits[:3])
     return {"ok": True, "speech": speech,
             "data": {"hits": hits}}
+
+
+# ---------------- Knowledge Graph & Memory Consolidation ----------------
+
+def record_relation(source: str, relation: str, target: str, context: str = "", confidence: float = 1.0) -> bool:
+    """Store or update an associative edge in the memory graph."""
+    import time
+    s = (source or "").strip().lower()
+    r = (relation or "").strip().lower()
+    t = (target or "").strip().lower()
+    if not (s and r and t):
+        return False
+    try:
+        with db.connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO memory_graph (source, relation, target, context, confidence, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (s, r, t, str(context)[:300], float(confidence), time.time()),
+            )
+            return True
+    except Exception as exc:
+        log.warning("record_relation failed: %s", exc)
+        return False
+
+
+def graph_query(entity: str, hops: int = 2, max_edges: int = 25) -> list[dict]:
+    """Traverse outbound and inbound relations up to N hops from an entity."""
+    root = (entity or "").strip().lower()
+    if not root:
+        return []
+
+    visited_entities = {root}
+    frontier = {root}
+    collected_edges = []
+
+    try:
+        with db.connect() as conn:
+            for _ in range(max(1, min(int(hops), 3))):
+                if not frontier or len(collected_edges) >= max_edges:
+                    break
+                placeholders = ",".join("?" * len(frontier))
+                params = list(frontier) * 2
+                query = f"""
+                    SELECT source, relation, target, context, confidence
+                    FROM memory_graph
+                    WHERE source IN ({placeholders}) OR target IN ({placeholders})
+                    LIMIT {max_edges}
+                """
+                rows = conn.execute(query, params).fetchall()
+                next_frontier = set()
+                for row in rows:
+                    edge = {
+                        "source": row["source"],
+                        "relation": row["relation"],
+                        "target": row["target"],
+                        "context": row["context"],
+                        "confidence": row["confidence"],
+                    }
+                    if edge not in collected_edges:
+                        collected_edges.append(edge)
+                    if row["source"] not in visited_entities:
+                        visited_entities.add(row["source"])
+                        next_frontier.add(row["source"])
+                    if row["target"] not in visited_entities:
+                        visited_entities.add(row["target"])
+                        next_frontier.add(row["target"])
+                frontier = next_frontier
+        return collected_edges
+    except Exception as exc:
+        log.warning("graph_query failed: %s", exc)
+        return []
+
+
+def format_graph_context(topic: str) -> str:
+    """Format relational graph context for prompt injection."""
+    edges = graph_query(topic, hops=2, max_edges=10)
+    if not edges:
+        return ""
+    lines = [f"- {e['source']} --[{e['relation']}]--> {e['target']}" + (f" ({e['context']})" if e['context'] else "") for e in edges]
+    return "Associative Memory Graph:\n" + "\n".join(lines)
+
+
+def consolidate_memories() -> dict:
+    """Nightly / idle consolidation of recent turns into long-term graph relations."""
+    try:
+        from . import llm
+        msgs = db.recent_messages(limit=30)
+        if len(msgs) < 4:
+            return {"ok": True, "speech": "Insufficient recent interactions to consolidate.", "edges_added": 0}
+
+        dialogue = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in msgs[-20:])
+        prompt = (
+            "Analyze the recent interaction dialogue below and extract high-level durable entity-relationships.\n"
+            "Identify user preferences, project details, decisions, habits, and key technical choices.\n"
+            "Format your response ONLY as a JSON array of triples:\n"
+            '[{"source": "user/entity", "relation": "likes/built/prefers/works_on", "target": "value/project", "context": "optional notes"}]\n\n'
+            f"Dialogue:\n{dialogue}"
+        )
+        system = "You are a memory consolidation engine. Extract durable relational knowledge as JSON triples only."
+        raw = llm.chat([{"role": "system", "content": system}, {"role": "user", "content": prompt}], temperature=0.1, timeout=30, role="fast")
+        clean = (raw or "").strip()
+        if "[" in clean and "]" in clean:
+            start = clean.find("[")
+            end = clean.rfind("]") + 1
+            clean = clean[start:end]
+        triples = json.loads(clean)
+        added = 0
+        for t in triples:
+            if isinstance(t, dict) and "source" in t and "relation" in t and "target" in t:
+                if record_relation(t["source"], t["relation"], t["target"], t.get("context", "")):
+                    added += 1
+        return {
+            "ok": True,
+            "speech": f"Consolidated memories: extracted and indexed {added} new relationship(s).",
+            "edges_added": added,
+        }
+    except Exception as exc:
+        log.warning("Memory consolidation failed: %s", exc)
+        return {"ok": False, "speech": f"Consolidation note: {exc}", "edges_added": 0}
+
+
+@tool("query_knowledge_graph", "Query the multi-hop relational memory graph for connections to an entity or concept.",
+      {"entity": {"type": "string"}, "hops": {"type": "integer"}}, permission="read")
+def query_knowledge_graph_tool(entity: str, hops: int = 2) -> dict:
+    edges = graph_query(entity, hops=hops)
+    if not edges:
+        return {"ok": False, "speech": f"No relational connections found for '{entity}'.", "data": {"edges": []}}
+    summary = "; ".join(f"{e['source']} {e['relation']} {e['target']}" for e in edges[:4])
+    return {"ok": True, "speech": summary, "data": {"edges": edges}}
+
+
+@tool("consolidate_memory_now", "Trigger immediate memory consolidation, extracting entity triples and durable relationships from recent dialogue.",
+      {}, permission="read")
+def consolidate_memory_now_tool() -> dict:
+    return consolidate_memories()

@@ -20,7 +20,7 @@ class StrategyLearner:
 
     def _ensure_schema(self) -> None:
         try:
-            with sqlite3.connect(db.DB_PATH) as con:
+            with db.connect() as con:
                 con.execute("""
                     CREATE TABLE IF NOT EXISTS autonomous_strategy (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,7 +40,7 @@ class StrategyLearner:
         outcome = "win" if success else "loss"
         now = time.time()
         try:
-            with sqlite3.connect(db.DB_PATH) as con:
+            with db.connect() as con:
                 con.execute(
                     "INSERT INTO autonomous_strategy (ts, category, strategy_key, outcome, reward, meta_json) VALUES (?, ?, ?, ?, ?, ?)",
                     (now, category, strategy_key, outcome, reward, json.dumps(meta or {})),
@@ -50,7 +50,7 @@ class StrategyLearner:
 
     def get_win_rate(self, category: str, strategy_key: str) -> float:
         try:
-            with sqlite3.connect(db.DB_PATH) as con:
+            with db.connect() as con:
                 cur = con.cursor()
                 total = cur.execute("SELECT COUNT(*) FROM autonomous_strategy WHERE category = ? AND strategy_key = ?", (category, strategy_key)).fetchone()[0]
                 if not total:
@@ -62,8 +62,7 @@ class StrategyLearner:
 
     def get_best_strategy(self, category: str) -> dict[str, Any]:
         try:
-            with sqlite3.connect(db.DB_PATH) as con:
-                con.row_factory = sqlite3.Row
+            with db.connect() as con:
                 rows = con.execute("""
                     SELECT strategy_key, 
                            SUM(CASE WHEN outcome = 'win' THEN 1 ELSE 0 END) as wins,

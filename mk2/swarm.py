@@ -238,6 +238,18 @@ class SwarmOrchestrator:
 
     def execute(self, objective: str, background: bool = True) -> dict[str, Any]:
         """Launch the swarm workflow."""
+        # Detect complex engineering tasks and delegate to closed-loop TDD engineering core
+        obj_low = (objective or "").lower()
+        eng_keywords = ("build ", "create code", "write a python", "develop ", "implement ", "test-driven", "engineer ", "simulate ")
+        if any(k in obj_low for k in eng_keywords) and not background:
+            try:
+                from . import engineering
+                if "simulate " in obj_low:
+                    return engineering.simulate_engineering(objective)
+                return engineering.engineer_solution(objective)
+            except Exception as exc:
+                log.warning("Engineering delegation failed, falling back to DAG swarm: %s", exc)
+
         swarm_id = f"sw_{int(time.time())}_{len(_active_swarms) + 1}"
         dag_tasks = self.decompose_dag(objective)
         execution = SwarmExecution(

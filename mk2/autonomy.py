@@ -125,7 +125,10 @@ def is_allowed(tool_name: str, permission: str = "", context: dict | None = None
         dangerous = {"shell_run", "fs_delete", "mail_send"}
         if tool_name in dangerous:
             return False
-    if level == "full" or permission in ("read", "info") or tool_name.startswith("api_") or tool_name.startswith("skill_"):
+    if level == "full" or permission in ("read", "info"):
+        return True
+    # Allow user-configured REST connectors and loaded skills unless explicitly denied
+    if tool_name.startswith("api_") or tool_name.startswith("skill_"):
         return True
     # Enforce allow-list for non-full tiers
     if tier.get("allow") and tool_name not in tier["allow"]:
@@ -410,6 +413,9 @@ class BrowserAgent:
 
     def navigate(self, url: str) -> dict:
         try:
+            from .tools.browser_tools import _nav_allowed
+            if not _nav_allowed(url):
+                return {"ok": False, "speech": f"Navigation blocked by security allowlist: {url}", "data": {}}
             page = self._ensure_page()
             page.goto(url, wait_until="domcontentloaded", timeout=30000)
             title = page.title()
@@ -489,59 +495,60 @@ class AutonomousRunner:
         self._load_state()
 
     def _load_state(self) -> None:
-        if GOALS_FILE.exists():
-            try:
-                raw = json.loads(GOALS_FILE.read_text(encoding="utf-8"))
-                self.session_state = raw.get("session_state", self.session_state)
-                b = get_browser()
-                if "browser_state" in raw and hasattr(b, "session_state"):
-                    b.session_state.update(raw.get("browser_state", {}))
-                for m_data in raw.get("missions", []):
-                    st_list = [
-                        SubTask(
-                            id=st.get("id", ""),
-                            description=st.get("description", ""),
-                            tool_hint=st.get("tool_hint", ""),
-                            depends_on=st.get("depends_on", []),
-                            status=st.get("status", "pending"),
-                            result=st.get("result", ""),
-                            attempts=st.get("attempts", 0),
+        with self._lock:
+            if GOALS_FILE.exists():
+                try:
+                    raw = json.loads(GOALS_FILE.read_text(encoding="utf-8"))
+                    self.session_state = raw.get("session_state", self.session_state)
+                    b = get_browser()
+                    if "browser_state" in raw and hasattr(b, "session_state"):
+                        b.session_state.update(raw.get("browser_state", {}))
+                    for m_data in raw.get("missions", []):
+                        st_list = [
+                            SubTask(
+                                id=st.get("id", ""),
+                                description=st.get("description", ""),
+                                tool_hint=st.get("tool_hint", ""),
+                                depends_on=st.get("depends_on", []),
+                                status=st.get("status", "pending"),
+                                result=st.get("result", ""),
+                                attempts=st.get("attempts", 0),
+                            )
+                            for st in m_data.get("subtasks", [])
+                        ]
+                        m = Mission(
+                            id=m_data.get("id", ""),
+                            goal=m_data.get("goal", ""),
+                            subtasks=st_list,
+                            status=m_data.get("status", "planning"),
+                            strategy_used=m_data.get("strategy", ""),
+                            context=m_data.get("context", {}),
+                            session_state=m_data.get("session_state", {
+                                "browser_session_id": "",
+                                "form_progress": {},
+                                "login_state": False,
+                                "checkout_step": "",
+                            }),
                         )
-                        for st in m_data.get("subtasks", [])
-                    ]
-                    m = Mission(
-                        id=m_data.get("id", ""),
-                        goal=m_data.get("goal", ""),
-                        subtasks=st_list,
-                        status=m_data.get("status", "planning"),
-                        strategy_used=m_data.get("strategy", ""),
-                        context=m_data.get("context", {}),
-                        session_state=m_data.get("session_state", {
-                            "browser_session_id": "",
-                            "form_progress": {},
-                            "login_state": False,
-                            "checkout_step": "",
-                        }),
-                    )
-                    self.missions[m.id] = m
-            except Exception as exc:
-                log.warning("Autonomy state file %s corrupt: %s. Attempting backup restore.", GOALS_FILE, exc)
-                bak = GOALS_FILE.with_suffix(".bak")
-                if bak.exists():
-                    try:
-                        raw_bak = json.loads(bak.read_text(encoding="utf-8"))
-                        for m_data in raw_bak.get("missions", []):
-                            m_id = m_data.get("id", "")
-                            if m_id:
-                                self.missions[m_id] = Mission(
-                                    id=m_id,
-                                    goal=m_data.get("goal", ""),
-                                    subtasks=[],
-                                    status=m_data.get("status", "planning"),
-                                )
-                        log.info("Restored %d missions from backup", len(self.missions))
-                    except Exception as b_exc:
-                        log.warning("Backup restore also failed: %s", b_exc)
+                        self.missions[m.id] = m
+                except Exception as exc:
+                    log.warning("Autonomy state file %s corrupt: %s. Attempting backup restore.", GOALS_FILE, exc)
+                    bak = GOALS_FILE.with_suffix(".bak")
+                    if bak.exists():
+                        try:
+                            raw_bak = json.loads(bak.read_text(encoding="utf-8"))
+                            for m_data in raw_bak.get("missions", []):
+                                m_id = m_data.get("id", "")
+                                if m_id:
+                                    self.missions[m_id] = Mission(
+                                        id=m_id,
+                                        goal=m_data.get("goal", ""),
+                                        subtasks=[],
+                                        status=m_data.get("status", "planning"),
+                                    )
+                            log.info("Restored %d missions from backup", len(self.missions))
+                        except Exception as b_exc:
+                            log.warning("Backup restore also failed: %s", b_exc)
 
     def _save_state(self) -> None:
         with self._lock:
@@ -634,6 +641,14 @@ class AutonomousRunner:
         except Exception:
             pass
         return None
+
+    def stop(self) -> None:
+        """Emergency stop: abort all active autonomous missions."""
+        with self._lock:
+            for m in self.missions.values():
+                if m.status == "running":
+                    m.status = "aborted"
+            self._save_state()
 
     def _should_ask_user(self, mission: Mission, subtask: SubTask, result: dict) -> dict | None:
         """Checkpoint: detect if an ambiguous situation or branching decision needs human input."""
@@ -934,6 +949,9 @@ class AutonomousRunner:
         """Read proactive signals from initiative_engine without auto-spawning unprompted missions."""
         if os.environ.get("EVO_AUTO_INITIATIVE", "0") != "1":
             return
+        from .consent import get_consent_manager
+        if not get_consent_manager().has_consent("autonomy_execute"):
+            return
         try:
             from . import initiative_engine
             candidates = initiative_engine.gather_candidates()
@@ -986,6 +1004,10 @@ class ContinuousAutonomyLoop:
             self._stop.wait(300)
 
     def _tick(self, runner: AutonomousRunner) -> None:
+        from .kill_switch import get_kill_switch
+        if get_kill_switch().is_active():
+            log.debug("Continuous autonomy tick skipped: kill switch is active.")
+            return
         self._check_proactive_actions(runner)
         runner._check_initiative_signals()
 
@@ -1014,9 +1036,12 @@ class ContinuousAutonomyLoop:
     def _save_auto_goals(self, goals: list[dict]) -> None:
         path = AUTO_DATA / "auto_goals.json"
         try:
-            path.write_text(json.dumps(goals, indent=2), encoding="utf-8")
-        except Exception:
-            pass
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(goals, indent=2), encoding="utf-8")
+            tmp.replace(path)
+        except Exception as exc:
+            log.warning("Failed saving auto goals: %s", exc)
 
 
 _autonomy_loop: ContinuousAutonomyLoop | None = None
@@ -1059,25 +1084,17 @@ def autonomy_stop(mission_id: str) -> dict:
     return {"ok": ok, "speech": speech, "data": {}}
 
 
-@tool("autonomy_permission", "Set or query the autonomy permission level (safe|standard|extended|full).",
+@tool("autonomy_permission", "Query the current autonomy permission level (safe|standard|extended|full).",
       {"level": {"type": "string", "default": ""}}, permission="admin")
 def autonomy_permission(level: str = "") -> dict:
-    if not level:
-        cur = get_permission_level()
-        desc = _PERMISSION_TIERS.get(cur, {}).get("description", "")
+    cur = get_permission_level()
+    desc = _PERMISSION_TIERS.get(cur, {}).get("description", "")
+    if not level or level.lower().strip() == cur:
         return {"ok": True, "speech": f"Permission level: {cur} ({desc})", "data": {"level": cur}}
-    level = level.lower().strip()
-    if level not in _PERMISSION_TIERS:
-        return {
-            "ok": False,
-            "speech": f"Invalid level. Choose from: {', '.join(_PERMISSION_TIERS.keys())}",
-            "data": {},
-        }
-    os.environ["EVO_AUTONOMY_LEVEL"] = level
     return {
-        "ok": True,
-        "speech": f"Permission level set to '{level}': {_PERMISSION_TIERS[level]['description']}",
-        "data": {"level": level},
+        "ok": False,
+        "speech": "Autonomy level cannot be modified via tool execution. Adjust EVO_AUTONOMY_LEVEL in host environment or settings.",
+        "data": {"level": cur},
     }
 
 

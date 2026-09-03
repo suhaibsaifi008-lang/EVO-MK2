@@ -172,6 +172,16 @@ class JarvisAgent:
             if m_res.get("enqueued_id"):
                 findings.append(f"Enqueued opportunity proposal #{m_res['enqueued_id']}")
 
+        # 8. Memory graph consolidation (once per day)
+        if self._should_run_daily("memory_consolidation"):
+            try:
+                from . import deep_memory
+                c_res = deep_memory.consolidate_memories()
+                if c_res.get("edges_added", 0) > 0:
+                    findings.append(f"Memory Consolidation: extracted {c_res['edges_added']} relationship triples")
+            except Exception as exc:
+                log.debug("Daily memory consolidation note: %s", exc)
+
         self.proactive_alerts = findings[-10:]
         return {"ok": True, "ts": self.last_tick_ts, "findings": findings}
 

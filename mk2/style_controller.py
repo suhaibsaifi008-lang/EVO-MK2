@@ -77,8 +77,11 @@ def classify(user_text: str) -> dict:
             return cached
         cls = _model_classify(text)
         with _lock:
-            if len(_cache) > 200:
-                _cache.clear()
+            while len(_cache) >= 100:
+                try:
+                    _cache.pop(next(iter(_cache)))
+                except Exception:
+                    break
             _cache[text[:120]] = cls
         return cls
     return _heuristic_classify(text)
@@ -117,10 +120,15 @@ def directive(user_text: str) -> str:
 
 
 def _preference_line(tone: str) -> str:
-    facts = {f["key"]: f["value"] for f in db.all_facts(40)}
-    pos = sum(int(float(facts.get(f"feedback:{tone}:positive", "0") or 0)
-                  or 0) for _ in [0])
-    neg = int(float(facts.get(f"feedback:{tone}:negative", "0") or 0) or 0)
+    facts = {f["key"]: f["value"] for f in db.all_facts(60)}
+    try:
+        pos = int(float(facts.get(f"feedback:{tone}:positive", 0) or 0))
+    except Exception:
+        pos = 0
+    try:
+        neg = int(float(facts.get(f"feedback:{tone}:negative", 0) or 0))
+    except Exception:
+        neg = 0
     if pos >= 2 and pos > neg * 2:
         return (f"Note: the user has responded well to your {tone}-mode "
                 "replies before - keep this register.")
@@ -163,6 +171,16 @@ def note_feedback(user_text: str) -> bool:
         for sent in re.split(r"(?<=[.!?])\s+", user_text):
             low = sent.lower()
             if any(t in low for t in triggers) and len(sent.strip()) > 12:
+                # Filter out prompt injection, identity overrides, and safety bypasses
+                disallowed = (
+                    "ignore all previous", "ignore prior", "you are now", "you are sam",
+                    "you have no restrictions", "no restrictions", "without restrictions",
+                    "dan mode", "jailbreak", "act as", "pretend to be", "roleplay as",
+                    "no longer evo", "no longer jarvis", "disable safety", "bypass",
+                    "delete files", "shell_run", "override rules", "never follow rules"
+                )
+                if any(p in low for p in disallowed):
+                    continue
                 existing = [f["value"] for f in db.all_facts(40)
                             if f["key"].startswith("rule:")]
                 rule = sent.strip()[:200]

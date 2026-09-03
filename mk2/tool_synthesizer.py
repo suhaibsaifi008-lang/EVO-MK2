@@ -46,6 +46,33 @@ def _validate_code_ast(code: str, expected_func_name: str) -> tuple[bool, str]:
     return True, "AST validation passed"
 
 
+def _heal_code(name: str, code: str, error: str) -> str:
+    """Closed-loop LLM repair for failing synthesized tools."""
+    try:
+        from . import llm
+        prompt = (
+            f"The synthesized Python tool '{name}' failed with error:\n{error}\n\n"
+            f"Code:\n{code}\n\n"
+            f"Fix the bug so it runs properly. Must define callable function '{name}'.\n"
+            "Return ONLY executable Python code. No markdown fences."
+        )
+        res = llm.chat([
+            {"role": "system", "content": "You are a code repair engineer. Output only fixed Python code."},
+            {"role": "user", "content": prompt}
+        ], temperature=0.1, timeout=20, role="primary")
+        clean = (res or "").strip()
+        if clean.startswith("```"):
+            lines = clean.splitlines()
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            clean = "\n".join(lines).strip()
+        return clean
+    except Exception:
+        return code
+
+
 def synthesize_tool(
     name: str,
     description: str,
@@ -73,7 +100,23 @@ def synthesize_tool(
     except Exception as exc:
         return {"ok": False, "speech": f"Could not write tool file: {exc}", "data": {"error": str(exc)}}
 
-    # 3. Dynamic Import & Hot Reload
+    # 3. Subprocess Sandbox: test code in isolated process before hot-loading
+    try:
+        import subprocess
+        sandbox_result = subprocess.run(
+            [sys.executable, "-I", "-c", f"import ast; compile({python_code!r}, '<sandbox>', 'exec')"],
+            capture_output=True, text=True, timeout=5,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if sandbox_result.returncode != 0:
+            err_msg = sandbox_result.stderr.strip()[:200]
+            return {"ok": False, "speech": f"Sandbox compilation failed: {err_msg}", "data": {"error": err_msg}}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "speech": "Sandbox compilation timed out (5s limit).", "data": {"error": "timeout"}}
+    except Exception as exc:
+        log.warning("Sandbox pre-check failed: %s", exc)
+
+    # 4. Dynamic Import & Hot Reload
     try:
         mod_name = f"mk2_dynamic_{name}"
         spec = importlib.util.spec_from_file_location(mod_name, str(tool_file))
@@ -87,19 +130,44 @@ def synthesize_tool(
         if not callable(target_fn):
             return {"ok": False, "speech": f"Attribute '{name}' is not callable.", "data": {}}
 
-        # 4. Optional Test Execution
+        # 4. Optional Test Execution with Self-Healing Retry
         test_speech = ""
         if test_args is not None:
             try:
                 test_res = target_fn(**test_args)
                 test_speech = f" Test call succeeded: {str(test_res)[:80]}."
             except Exception as test_exc:
-                log.warning("Test invocation for synthesized tool '%s' failed: %s", name, test_exc)
-                return {
-                    "ok": False,
-                    "speech": f"Tool compiled but test execution failed: {test_exc}",
-                    "data": {"error": str(test_exc)},
-                }
+                log.warning("Test invocation for synthesized tool '%s' failed: %s. Initiating self-healing...", name, test_exc)
+                # Closed-Loop Self-Healing Attempt
+                healed_code = _heal_code(name, python_code, str(test_exc))
+                valid, msg = _validate_code_ast(healed_code, name)
+                if valid:
+                    try:
+                        tool_file.write_text(healed_code, encoding="utf-8")
+                        spec = importlib.util.spec_from_file_location(mod_name, str(tool_file))
+                        if spec and spec.loader:
+                            module = importlib.util.module_from_spec(spec)
+                            sys.modules[mod_name] = module
+                            spec.loader.exec_module(module)
+                            healed_fn = getattr(module, name, None)
+                            if callable(healed_fn):
+                                test_res = healed_fn(**test_args)
+                                target_fn = healed_fn
+                                test_speech = f" (Self-healed) Test call succeeded: {str(test_res)[:80]}."
+                                log.info("Tool '%s' successfully self-healed!", name)
+                    except Exception as second_exc:
+                        log.warning("Self-healing second test failed: %s", second_exc)
+                        return {
+                            "ok": False,
+                            "speech": f"Tool test failed and self-healing failed: {second_exc}",
+                            "data": {"error": str(second_exc)},
+                        }
+                else:
+                    return {
+                        "ok": False,
+                        "speech": f"Tool compiled but test execution failed: {test_exc}",
+                        "data": {"error": str(test_exc)},
+                    }
 
         # 5. Hot-register into active _REGISTRY
         schema = args_schema or {}
@@ -151,6 +219,11 @@ def load_all_dynamic_tools() -> int:
         if tool_name.startswith("_"):
             continue
         try:
+            code = f.read_text(encoding="utf-8")
+            valid, msg = _validate_code_ast(code, tool_name)
+            if not valid:
+                log.warning("Skipping untrusted dynamic tool %s: %s", f.name, msg)
+                continue
             mod_name = f"mk2_dynamic_{tool_name}"
             spec = importlib.util.spec_from_file_location(mod_name, str(f))
             if spec and spec.loader:

@@ -4,6 +4,7 @@ import logging
 import os
 import threading
 import sys
+import time
 
 from . import config, db, llm, tools
 from .bus import bus
@@ -19,6 +20,24 @@ _tasks: dict[str, asyncio.Task] = {}
 _global_kernel_tasks: dict[str, asyncio.Task] = {}
 _restarts: dict[str, int] = {}
 _loop: asyncio.AbstractEventLoop | None = None
+_subsystem_health: dict[str, dict] = {}
+
+
+def _record_subsystem(name: str, started: bool, error: str | None = None) -> None:
+ _subsystem_health[name] = {
+ "started": started,
+ "error": error,
+ "started_at": time.time(),
+ }
+ if started:
+ log.info("Subsystem '%s' started OK", name)
+ else:
+ log.error("Subsystem '%s' FAILED to start: %s", name, error)
+
+
+def get_subsystem_health() -> dict[str, dict]:
+ """Return a snapshot of all tracked subsystem health states."""
+ return dict(_subsystem_health)
 
 
 def get_kernel_tasks() -> dict[str, asyncio.Task]:

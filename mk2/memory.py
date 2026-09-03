@@ -119,7 +119,8 @@ def track_opinion(topic: str, text: str, sentiment: str = None) -> None:
 
 def get_user_opinions() -> dict[str, dict]:
 	"""Return opinion store (topic -> {sentiment, text, count, ts})."""
-	return dict(_opinions_store)
+	with _lock:
+		return dict(_opinions_store)
 
 
 def update_opinion(topic: str, evidence: str, sentiment: float | str = 0.0) -> None:
@@ -255,10 +256,12 @@ def get_last_topic() -> str:
 
 def format_opinions_for_prompt(max_topics: int = 8) -> str:
 	"""Format opinions for injection into the LLM prompt."""
-	if not _opinions_store:
-		return ""
+	with _lock:
+		if not _opinions_store:
+			return ""
+		items = list(_opinions_store.items())[:max_topics]
 	lines = []
-	for topic, data in list(_opinions_store.items())[:max_topics]:
+	for topic, data in items:
 		sent = data.get("sentiment", "neutral")
 		cnt = data.get("count", 1)
 		if cnt >= 3:
@@ -401,12 +404,23 @@ def build_context_messages(user_text: str, surface: str = "console") -> list[dic
 	is_voice_or_fast = surface in ("voice", "web")
 	needs_deep_memory = any(k in (user_text or "").lower() for k in ("remember", "recall", "past note", "last time", "history", "what did i say"))
 
-	# 1. Recent facts (fast single query, <2ms)
-	facts = "; ".join(f"{f['key']}={f['value']}" for f in db.all_facts(8)) or "none"
+	# 1. Recent facts (fast single query, <2ms) with prompt-injection and identity-override filtering
+	_INJECTION_PATTERNS = (
+		"ignore all previous", "ignore prior", "system prompt", "you are now", "you are sam",
+		"act as", "disregard instructions", "you have no restrictions", "no restrictions",
+		"without restrictions", "unrestricted", "dan mode", "jailbreak", "no longer evo",
+		"no longer jarvis", "disable safety", "bypass", "delete files", "override rules",
+	)
+	def _is_safe_fact(text: str) -> bool:
+		low = text.lower()
+		return not any(p in low for p in _INJECTION_PATTERNS)
+
+	safe_facts = [f for f in db.all_facts(8) if _is_safe_fact(f.get("value", ""))]
+	facts = "; ".join(f"{f['key']}={f['value']}" for f in safe_facts) or "none"
 	blocks.append(f"Known facts: {facts}")
 
-	# 2. Standing corrections (rule:*)
-	corrections = [f["value"] for f in db.all_facts(15) if f["key"].startswith("rule:")]
+	# 2. Standing corrections (rule:*) sanitized
+	corrections = [f["value"] for f in db.all_facts(15) if f["key"].startswith("rule:") and _is_safe_fact(f.get("value", ""))]
 	if corrections:
 		blocks.append("STANDING CORRECTIONS: " + " | ".join(corrections[:4]))
 
@@ -416,13 +430,19 @@ def build_context_messages(user_text: str, surface: str = "console") -> list[dic
 			from . import deep_memory
 			sem = deep_memory.search(user_text, k=2)
 			if sem:
-				blocks.append("Older memories: " + " | ".join(h["summary"][:150] for h in sem))
+				safe_summaries = [h["summary"][:150] for h in sem if _is_safe_fact(h.get("summary", ""))]
+				if safe_summaries:
+					blocks.append("Older memories: " + " | ".join(safe_summaries))
+			# Phase 9: Associative Relational Graph Context
+			graph_ctx = deep_memory.format_graph_context(user_text)
+			if graph_ctx:
+				blocks.append(graph_ctx)
 		except Exception:
 			pass
 		try:
 			vault_hits = vault.search_vault(user_text, limit=2)
 			if vault_hits:
-				blocks.append("Vault matches: " + " | ".join(f"{h['file']}: {h['snippet'][:100]}" for h in vault_hits))
+				blocks.append("Vault matches: " + " | ".join(f"{h['file']}: {h['snippet'][:100]}" for h in vault_hits if _is_safe_fact(h.get("snippet", ""))))
 		except Exception:
 			pass
 
@@ -452,10 +472,22 @@ def build_context_messages(user_text: str, surface: str = "console") -> list[dic
 		for _compact_iter in range(100):
 			if tokens <= max_tokens * 0.85 or len(msgs) <= 4:
 				break
-			for i in range(1, len(msgs)):
-				if msgs[i].get("role") != "system":
-					msgs.pop(i)
+			# Pop oldest conversation pair (user + assistant) to maintain dialogue coherence
+			# Protect msgs[0] (system), msgs[-2] (current user input), and msgs[-1] (trailing system instructions)
+			popped = False
+			for i in range(1, len(msgs) - 2):
+				if msgs[i].get("role") == "user":
+					msgs.pop(i)  # pop oldest user turn
+					if i < len(msgs) - 2 and msgs[i].get("role") == "assistant":
+						msgs.pop(i)  # pop matching assistant reply
+					popped = True
 					break
+			if not popped:
+				# Fallback: pop any non-system message before the current turn
+				for i in range(1, len(msgs) - 2):
+					if msgs[i].get("role") != "system":
+						msgs.pop(i)
+						break
 			tokens = llm.estimate_tokens(msgs)
 		else:
 			import logging
@@ -533,10 +565,12 @@ def record_turn(user_text: str, reply: str, surface: str) -> None:
 	extracted = extract_facts(user_text, reply, force=True)
 	for fact in extracted:
 		try:
-			# Shared experiences and inside jokes marked personality_relevant are never filtered out
-			db.remember_fact(fact["key"], fact["value"], source="inferred")
+			# Shared experiences and inside jokes marked personality_relevant are tagged as personality
+			is_pers = bool(fact.get("personality_relevant") or fact.get("type") in ("preference", "like", "dislike"))
+			src = "personality" if is_pers else "inferred"
+			db.remember_fact(fact["key"], fact["value"], source=src)
 			# Form durable opinion if preference or sentiment detected
-			if fact.get("personality_relevant") or fact.get("type") in ("preference", "like", "dislike"):
+			if is_pers:
 				update_opinion(fact["key"], fact["value"])
 			try:
 				from . import vault
@@ -688,7 +722,13 @@ def summarize_and_archive() -> bool:
 def _get_personality_facts(limit: int = 12) -> dict:
 	"""Pull recent personality-relevant facts for relationship depth scoring."""
 	try:
-		return {f["key"]: f["value"] for f in db.all_facts(limit) if f.get("source") == "personality"}
+		facts = db.all_facts(limit)
+		return {
+			f["key"]: f["value"]
+			for f in facts
+			if f.get("source") in ("personality", "feedback", "correction", "inferred")
+			or f.get("key", "").startswith(("rule:", "opinion:", "user:", "preference:"))
+		}
 	except Exception:
 		return {}
 
@@ -771,7 +811,8 @@ def build_relationship_response_guidance() -> str:
 	if shared > 5:
 		parts.append(f"You share {shared} history items with this user. Weave in "
 					 "references to past conversations naturally when relevant.")
-	opinions = _opinions_store
+	with _lock:
+		opinions = dict(_opinions_store)
 	if opinions:
 		likes = [t for t, d in opinions.items() if d.get("sentiment") == "like" and d.get("count", 0) >= 2]
 		dislikes = [t for t, d in opinions.items() if d.get("sentiment") == "dislike" and d.get("count", 0) >= 2]

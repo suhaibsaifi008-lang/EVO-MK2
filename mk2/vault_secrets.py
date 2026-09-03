@@ -1,12 +1,15 @@
 """Phase 6: vault_secrets -- secret storage with platform guard."""
 import base64
 import json
+import logging
 import os
 import sys as _sys
 from pathlib import Path
 
 from . import db
 from .config import DATA
+
+log = logging.getLogger("mk2.vault_secrets")
 
 STORE = DATA / "secrets.bin"
 _no_crypt = (_sys.platform != "win32")
@@ -27,30 +30,49 @@ class _DATA_BLOB:
 		self.pbData = ctypes.c_void_p.from_buffer(ctypes.create_string_buffer(data or b"")).value if data else 0
 
 
+from cryptography.fernet import Fernet
+
+
+def _fernet_fallback() -> Fernet:
+	import base64
+	import hashlib
+	machine_id = os.environ.get("COMPUTERNAME", "evo-mk2-node")
+	key_mat = hashlib.sha256(f"evo-secrets-{machine_id}".encode("utf-8")).digest()
+	return Fernet(base64.urlsafe_b64encode(key_mat))
+
+
 def _protect(plain):
-	if _no_crypt:
-		return plain
+	if not _no_crypt:
+		try:
+			in_b = _DATA_BLOB(plain)
+			out = _DATA_BLOB()
+			if _crypt32.CryptProtectData(ctypes.byref(in_b), None, None, None, None, 0x01, ctypes.byref(out)):
+				return ctypes.string_at(out.pbData, out.cbData)
+		except Exception as exc:
+			log.warning("DPAPI encryption failed (%s); using Fernet encryption fallback.", exc)
 	try:
-		in_b = _DATA_BLOB(plain)
-		out = _DATA_BLOB()
-		if not _crypt32.CryptProtectData(ctypes.byref(in_b), None, None, None, None, 0x01, ctypes.byref(out)):
-			return plain
-		return ctypes.string_at(out.pbData, out.cbData)
-	except Exception:
-		return plain
+		return b"fernet:" + _fernet_fallback().encrypt(plain)
+	except Exception as exc:
+		log.error("All encryption backends failed for secret: %s", exc)
+		raise RuntimeError("Failed to encrypt secret; refusing to store plaintext.") from exc
 
 
 def _unprotect(cipher):
-	if _no_crypt:
-		return cipher
-	try:
-		in_b = _DATA_BLOB(cipher)
-		out = _DATA_BLOB()
-		if not _crypt32.CryptUnprotectData(ctypes.byref(in_b), None, None, None, None, 0x01, ctypes.byref(out)):
-			return cipher
-		return ctypes.string_at(out.pbData, out.cbData)
-	except Exception:
-		return cipher
+	if isinstance(cipher, bytes) and cipher.startswith(b"fernet:"):
+		try:
+			return _fernet_fallback().decrypt(cipher[7:])
+		except Exception as exc:
+			log.error("Failed to decrypt Fernet secret: %s", exc)
+			return b""
+	if not _no_crypt:
+		try:
+			in_b = _DATA_BLOB(cipher)
+			out = _DATA_BLOB()
+			if _crypt32.CryptUnprotectData(ctypes.byref(in_b), None, None, None, None, 0x01, ctypes.byref(out)):
+				return ctypes.string_at(out.pbData, out.cbData)
+		except Exception:
+			pass
+	return cipher
 
 
 def _load():
@@ -65,8 +87,6 @@ def _load():
 
 
 def _save_all(secrets):
-	if _no_crypt:
-		return
 	DATA.mkdir(parents=True, exist_ok=True)
 	raw = {k: base64.b64encode(_protect(v.encode("utf-8"))).decode("ascii")
 		 for k, v in secrets.items()}

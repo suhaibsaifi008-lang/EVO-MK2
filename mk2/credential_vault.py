@@ -153,9 +153,10 @@ class CredentialVault:
         vault_data = self._read_vault_unlocked()
         if not vault_data:
             return {"ok": True, "message": "No credentials to rotate."}
-        # Generate new salt
+        # Generate new salt with HMAC integrity tag (16 + 32 = 48 bytes)
         new_salt = os.urandom(16)
-        self.salt_path.write_bytes(new_salt)
+        tag = self._hmac.new(b"evo-mk2-salt-integrity", new_salt, self._hashlib.sha256).digest()
+        self.salt_path.write_bytes(new_salt + tag)
         self._init_crypto()  # re-derive key with new salt
         self._write_vault_unlocked(vault_data)
         log.info("Credential vault key rotated successfully.")

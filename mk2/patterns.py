@@ -42,14 +42,21 @@ def learn_pattern(pattern_type: str, time_str: str, day_of_week: int,
     for p in patterns:
         if p.get("type") == pattern_type and p.get("day_of_week") in (day_of_week, -1):
             p_time = p.get("time", "")
-            if p_time and abs(int(p_time.split(":")[0]) - int(time_str.split(":")[0])) <= 1:
-                # Update confidence and count
-                p["occurrences"] = p.get("occurrences", 1) + 1
-                p["confidence"] = min(0.95, p.get("confidence", 0.5) + 0.1)
-                p["last_updated"] = time.time()
-                p["action_hint"] = action_hint or p.get("action_hint", "")
-                _save_patterns(patterns)
-                return p
+            if p_time and ":" in p_time and ":" in time_str:
+                try:
+                    ph, pm = map(int, p_time.split(":")[:2])
+                    th, tm = map(int, time_str.split(":")[:2])
+                    diff = abs((ph * 60 + pm) - (th * 60 + tm))
+                    if min(diff, 1440 - diff) <= 30:
+                        # Update confidence and count
+                        p["occurrences"] = p.get("occurrences", 1) + 1
+                        p["confidence"] = min(0.95, p.get("confidence", 0.5) + 0.1)
+                        p["last_updated"] = time.time()
+                        p["action_hint"] = action_hint or p.get("action_hint", "")
+                        _save_patterns(patterns)
+                        return p
+                except Exception:
+                    pass
 
     new_pattern = {
         "id": f"pat_{int(time.time())}_{len(patterns) + 1}",
@@ -112,7 +119,7 @@ def predict_upcoming_patterns(lookahead_minutes: int = 25) -> list[dict]:
         except ValueError:
             continue
 
-        diff = pat_mins - cur_mins
+        diff = (pat_mins - cur_mins) % 1440
         # Upcoming in 0..lookahead_minutes
         if 0 <= diff <= lookahead_minutes:
             # Don't re-trigger if triggered within last 6 hours

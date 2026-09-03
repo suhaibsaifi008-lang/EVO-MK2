@@ -31,7 +31,8 @@ BACKUPS_DIR = DATA / "code_backups"
 
 CRITICAL_MODULES = {
     "kernel.py", "brain.py", "autonomy.py", "bus.py", "memory.py",
-    "initiative_engine.py", "kill_switch.py", "financial_intelligence.py", "security.py"
+    "initiative_engine.py", "kill_switch.py", "financial_intelligence.py", "security.py",
+    "server.py", "consent.py", "audit.py", "db.py",
 }
 
 
@@ -314,9 +315,9 @@ class SelfImprovementEngine:
             try:
                 patch = self.propose_improvement(t)
                 if patch:
-                    verdict = self.apply_patch(t, patch, user_approved=True)
+                    # Require explicit approval; do not manufacture approval precedents
+                    verdict = self.apply_patch(t, patch, user_approved=False)
                     if verdict.verdict == "safe":
-                        self.consent.record_outcome("safe_autofix", True, f"Auto-fixed {t.get('issue_type')} in {t.get('file')}")
                         applied.append(t)
             except Exception as exc:
                 log.warning("Auto-fix execution failed for %s: %s", t.get("file"), exc)

@@ -62,9 +62,33 @@ def ddg_results(query: str, max_results: int = 5) -> list[dict]:
 
 
 
+def _is_safe_url(url: str) -> bool:
+    try:
+        import ipaddress
+        import socket
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return False
+        host = parsed.hostname or ""
+        if not host or host.lower() in ("localhost", "127.0.0.1", "::1", "metadata.google.internal"):
+            return False
+        # Resolve IP to verify non-private / non-loopback
+        addrs = socket.getaddrinfo(host, None)
+        for family, _, _, _, sockaddr in addrs:
+            ip_str = sockaddr[0]
+            ip_obj = ipaddress.ip_address(ip_str)
+            if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local or ip_obj.is_multicast:
+                return False
+        return True
+    except Exception:
+        return False
+
+
 def fetch_page_text(url: str, max_chars: int = 3000) -> str:
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
+    if not _is_safe_url(url):
+        return "(blocked: internal or unsafe URL)"
     raw = _get(url)
     raw = re.sub(r"(?is)<(script|style|noscript|svg|head)[^>]*>.*?</\1>", " ", raw)
     raw = re.sub(r"(?is)<br\s*/?>|</p>|</div>|</li>|</h[1-6]>", "\n", raw)

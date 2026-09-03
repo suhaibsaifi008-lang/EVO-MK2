@@ -21,4 +21,24 @@ def clean_shared_state(monkeypatch):
                             raising=False)
     except Exception:
         pass
+
+    # reset consent level and kill switch state to baseline assist
+    try:
+        from mk2.kill_switch import KillSwitch, get_kill_switch
+        KillSwitch._is_halted = False
+        from mk2.consent import get_consent_manager
+        cm = get_consent_manager()
+        cm.current_level = "assist"
+    except Exception:
+        pass
+
     yield
+
+    # restore after test completes
+    try:
+        from mk2.kill_switch import KillSwitch
+        KillSwitch._is_halted = False
+        from mk2.consent import get_consent_manager
+        get_consent_manager().current_level = "assist"
+    except Exception:
+        pass

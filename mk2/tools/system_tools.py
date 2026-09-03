@@ -110,7 +110,7 @@ def _fuzzy(target: str, choices: list[str], cutoff: float = 0.72):
 
 
 @tool("open_app", "Open ANY app, site, or URL by name. Handles typos; unknown names fall back to a web search.",
-      {"target": {"type": "string"}}, permission="execute")
+      {"target": {"type": "string"}}, permission="assist")
 def open_app(target: str) -> dict:
     import difflib
     import webbrowser
@@ -236,6 +236,9 @@ def shell_run(command: str, timeout: int = 20) -> dict:
         "invoke-expression", "iex ", "iex(", "downloadstring", "downloadfile",
         "-encodedcommand", "-enc ", "certutil", "bitsadmin", "curl -o", "wget -o",
         "powershell -e", "pwsh -e", "start-bitstransfer",
+        "invoke-webrequest", "iwr ", "wget ", "curl ",
+        "vssadmin", "wbadmin", "shadowcopy", "schtasks /create",
+        "set-executionpolicy", "netsh advfirewall",
     )
     if any(d in cmd_low for d in blocked):
         return {"ok": False, "speech": "Command blocked: destructive or suspicious system command detected.", "data": {}}

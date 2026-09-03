@@ -262,14 +262,27 @@ class MoneyEngine:
         """Execute the opportunity through the respective platform agent."""
         plat = opportunity.get("platform")
         if plat == "upwork":
-            v = self.upwork.submit_proposal(opportunity, user_approved=True)
-            self.funnel.record_stage(
-                stage="proposal_sent",
-                source="upwork",
-                client=opportunity.get("client_id", ""),
-                amount=float(opportunity.get("bid", 150.0)),
-                meta={"gig": opportunity.get("title")},
-            )
+            v = self.upwork.submit_proposal(opportunity, user_approved=False)
+            if v.verdict == "caution":
+                try:
+                    from .approval_queue import get_approval_queue
+                    item_id = get_approval_queue().enqueue(
+                        action={"type": "upwork_proposal", "opportunity": opportunity},
+                        verdict=v,
+                    )
+                    res = v.to_dict()
+                    res["approval_item_id"] = item_id
+                    return res
+                except Exception:
+                    pass
+            if v.verdict == "safe":
+                self.funnel.record_stage(
+                    stage="proposal_sent",
+                    source="upwork",
+                    client=opportunity.get("client_id", ""),
+                    amount=float(opportunity.get("bid", 150.0)),
+                    meta={"gig": opportunity.get("title")},
+                )
             return v.to_dict()
         elif plat == "email":
             # Draft and log

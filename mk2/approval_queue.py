@@ -75,7 +75,10 @@ class ApprovalQueue:
         return sorted(valid_items, key=lambda x: x.get("ts", 0), reverse=True)
 
     def get_item(self, item_id: str) -> Optional[dict[str, Any]]:
-        return self.pending.get(item_id)
+        item = self.pending.get(item_id)
+        if item and item.get("expires", time.time() + 1) < time.time():
+            return None
+        return item
 
     def approve(self, item_id: str) -> dict[str, Any]:
         """User approves the action. Marks it approved and triggers callback or execution."""

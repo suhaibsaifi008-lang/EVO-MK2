@@ -11,7 +11,9 @@ from . import db
 
 log = logging.getLogger("mk2.watchers")
 
-_lock = threading_lock = __import__("threading").Lock()
+import threading
+
+_lock = threading.Lock()
 
 
 def _ps(script: str, timeout: int = 15) -> str:

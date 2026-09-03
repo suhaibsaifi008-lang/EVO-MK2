@@ -53,9 +53,16 @@ def _is_proxy_error(text: str) -> bool:
 
 
 def estimate_tokens(messages: list[dict]) -> int:
-    """Rough token count estimation: ~4 characters per token for English text."""
-    total_chars = sum(len(str(m.get("content", ""))) for m in (messages or []))
-    return max(1, total_chars // 4)
+    """Accurate token count estimation: ~1.3 tokens per whitespace word + framing overhead."""
+    total_tokens = 0
+    for m in (messages or []):
+        content = str(m.get("content", ""))
+        words = len(content.split())
+        chars = len(content)
+        # Average word in English is ~1.3 tokens; fallback to chars/3.7 for dense/code text
+        est = max(int(words * 1.3), int(chars / 3.7))
+        total_tokens += est + 4  # 4 tokens overhead per message role/framing
+    return max(1, total_tokens)
 
 # cooldown so an exhausted/rate-limited model isn't retried every turn
 _cooldowns: dict[str, float] = {}
@@ -125,28 +132,24 @@ class LLMStreamStalled(LLMUnavailable):
         self.partial = partial
 
 
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+
+_LLM_POOL = ThreadPoolExecutor(max_workers=16, thread_name_prefix="mk2-llm")
+
+
 def _hard_bounded(fn, seconds: float):
-    """Run fn() with a HARD wall-clock limit.
+    """Run fn() with a HARD wall-clock limit using bounded thread pool.
 
     Socket timeouts don't bound slow/trickling generations; a stuck call can
     hold provider slots forever (this froze all of MK1's chat at one point).
     """
-    box: dict = {}
-
-    def runner() -> None:
-        try:
-            box["r"] = fn()
-        except BaseException as exc:  # noqa: BLE001
-            box["e"] = exc
-
-    th = threading.Thread(target=runner, daemon=True, name="mk2-llm-call")
-    th.start()
-    th.join(max(1.0, float(seconds)))
-    if "r" not in box:
-        if "e" in box:
-            raise box["e"]
+    fut = _LLM_POOL.submit(fn)
+    try:
+        return fut.result(timeout=max(1.0, float(seconds)))
+    except FuturesTimeout:
         raise LLMUnavailable(f"timed out after {seconds:.0f}s")
-    return box["r"]
+    except Exception as exc:
+        raise exc
 
 
 def _providers(*args, **kwargs) -> list[dict]:
@@ -410,10 +413,30 @@ def _anthropic_chat_stream(messages: list[dict], model: str, temperature: float,
                     yield delta_text
 
 
-def _gemini_client():
-    from google import genai
+_gemini_client_instance = None
+_gemini_lock = threading.Lock()
 
-    return genai.Client(api_key=settings.gemini_key)
+
+def _gemini_client():
+    global _gemini_client_instance
+    from google import genai
+    with _gemini_lock:
+        if _gemini_client_instance is None:
+            _gemini_client_instance = genai.Client(api_key=settings.gemini_key)
+        return _gemini_client_instance
+
+
+def close_gemini_client() -> None:
+    """Close cached Gemini client and release connection pools."""
+    global _gemini_client_instance
+    with _gemini_lock:
+        if _gemini_client_instance is not None:
+            try:
+                if hasattr(_gemini_client_instance, "close"):
+                    _gemini_client_instance.close()
+            except Exception:
+                pass
+            _gemini_client_instance = None
 
 
 def _gemini_chat(client, messages: list[dict], model: str, temperature: float) -> str:
@@ -450,17 +473,44 @@ def _offline_parse(text: str) -> str | None:
 
 	def _safe_eval_math(expr_str: str):
 		import ast
+		import operator
 		clean = expr_str.strip().replace("^", "**")
 		if not re.fullmatch(r"[\d\s+\-*/%.()]+", clean):
 			return None
+		bin_ops = {
+			ast.Add: operator.add, ast.Sub: operator.sub,
+			ast.Mult: operator.mul, ast.Div: operator.truediv,
+			ast.FloorDiv: operator.floordiv, ast.Mod: operator.mod,
+			ast.Pow: operator.pow,
+		}
+		un_ops = {ast.USub: operator.neg, ast.UAdd: operator.pos}
+
+		def _eval_node(node):
+			if isinstance(node, ast.Expression):
+				return _eval_node(node.body)
+			elif isinstance(node, ast.Constant):
+				if isinstance(node.value, (int, float)):
+					return node.value
+				raise ValueError("invalid constant")
+			elif isinstance(node, ast.BinOp):
+				op_cls = type(node.op)
+				if op_cls not in bin_ops:
+					raise ValueError("unsupported operator")
+				left = _eval_node(node.left)
+				right = _eval_node(node.right)
+				if op_cls is ast.Pow and (abs(left) > 10000 or abs(right) > 100):
+					raise ValueError("exponent too large")
+				return bin_ops[op_cls](left, right)
+			elif isinstance(node, ast.UnaryOp):
+				op_cls = type(node.op)
+				if op_cls not in un_ops:
+					raise ValueError("unsupported unary operator")
+				return un_ops[op_cls](_eval_node(node.operand))
+			raise ValueError("unsupported AST node")
+
 		try:
 			tree = ast.parse(clean, mode="eval")
-			_SAFE = (ast.Constant, ast.BinOp, ast.UnaryOp, ast.Expression)
-			_OPS = (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Mod, ast.Pow, ast.USub, ast.UAdd, ast.FloorDiv)
-			for node in ast.walk(tree):
-				if not isinstance(node, _SAFE + _OPS):
-					return None
-			return eval(compile(tree, "<math>", "eval"), {"__builtins__": {}}, {})
+			return _eval_node(tree)
 		except Exception:
 			return None
 
@@ -640,7 +690,7 @@ def _race_stream(pairs, messages: list[dict], temperature: float,
         distinct_pairs.append((prov, m))
     pairs = distinct_pairs or pairs[:1]
 
-    q: _q.Queue = _q.Queue()
+    q: _q.Queue = _q.Queue(maxsize=2000)
     stop_events = {i: threading.Event() for i in range(len(pairs))}
 
     def pump(prov, m, tag):

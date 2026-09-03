@@ -77,15 +77,15 @@ class KnowledgeAgent:
         try:
             with sqlite3.connect(db.DB_PATH) as con:
                 con.row_factory = sqlite3.Row
-                rows = con.execute("SELECT key, val FROM facts").fetchall()
+                rows = con.execute("SELECT key, value FROM facts").fetchall()
                 for r in rows:
-                    fact_str = f"{r['key']}: {r['val']}"
+                    fact_str = f"{r['key']}: {r['value']}"
                     emb = self.model.encode(fact_str).tolist() if self.model else None
                     self._doc_embeddings.append({
                         "source": "memory_fact",
                         "id": f"fact_{r['key']}",
                         "title": r["key"],
-                        "snippet": r["val"],
+                        "snippet": r["value"],
                         "text": fact_str,
                         "embedding": emb,
                     })
@@ -143,9 +143,9 @@ class KnowledgeAgent:
         try:
             with sqlite3.connect(db.DB_PATH) as con:
                 con.row_factory = sqlite3.Row
-                rows = con.execute("SELECT key, val FROM facts").fetchall()
+                rows = con.execute("SELECT key, value FROM facts").fetchall()
                 for r in rows:
-                    fact_str = f"{r['key']} {r['val']}".lower()
+                    fact_str = f"{r['key']} {r['value']}".lower()
                     fact_tokens = set(re.findall(r"\w+", fact_str))
                     overlap = len(q_tokens & fact_tokens) / (len(q_tokens) or 1)
                     if overlap > 0 or q_low in fact_str:
@@ -153,7 +153,7 @@ class KnowledgeAgent:
                             "source": "memory_fact",
                             "id": f"fact_{r['key']}",
                             "title": r["key"],
-                            "snippet": r["val"],
+                            "snippet": r["value"],
                             "score": round(0.5 + 0.4 * overlap, 2),
                         })
         except Exception:

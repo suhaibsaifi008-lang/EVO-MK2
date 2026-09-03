@@ -121,7 +121,7 @@ class ChunkedSpeaker:
 
             self._is_speaking = True
             try:
-                self.speaker.speak(chunk)
+                self.speaker.say(chunk)
             except Exception as exc:
                 log.debug("TTS chunk speak error: %s", exc)
             finally:

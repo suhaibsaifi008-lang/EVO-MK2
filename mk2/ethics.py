@@ -79,7 +79,7 @@ class MoralEngine:
         if action_type in ("read", "search", "web_search", "screen_read", "weather", "vault_read"):
             return MoralVerdict.safe("Information retrieval action carries no external risk.", action=action)
 
-        return MoralVerdict.safe("Action deemed benign.", action=action)
+        return MoralVerdict.caution("Action type unclassified; requires operator confirmation.", risks=["unclassified_action"], action=action)
 
     def _evaluate_email(self, action: dict[str, Any], context: dict[str, Any]) -> MoralVerdict:
         recipient = str(action.get("to") or "")

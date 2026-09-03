@@ -89,9 +89,8 @@ def verify_voiceprint(audio_bytes: bytes, threshold: float = 0.70) -> dict:
     """Compare inbound audio against the enrolled voiceprint profile."""
     global _consecutive_fails, _lockout_until
 
-    sec_level = os.environ.get("EVO_SECURITY_LEVEL", "medium").lower()
-    if sec_level == "low" or not is_enrolled():
-        return {"ok": True, "confidence": 1.0, "reason": "security_level_low_or_unenrolled"}
+    if not is_enrolled():
+        return {"ok": True, "confidence": 1.0, "reason": "unenrolled"}
 
     if is_locked_out():
         return {
@@ -105,8 +104,9 @@ def verify_voiceprint(audio_bytes: bytes, threshold: float = 0.70) -> dict:
     try:
         profile = json.loads(VOICEPRINT_FILE.read_text(encoding="utf-8"))
         stored_vec = np.array(profile["vector"], dtype=np.float32)
-    except Exception:
-        return {"ok": True, "confidence": 1.0, "reason": "profile_read_error"}
+    except Exception as exc:
+        log.error("Failed to read voiceprint profile: %s", exc)
+        return {"ok": False, "confidence": 0.0, "error": "profile_read_error", "speech": "Voice security profile read error."}
 
     inbound_vec = _extract_spectral_features(audio_bytes)
     similarity = float(np.dot(stored_vec, inbound_vec))
@@ -138,12 +138,13 @@ def verify_voiceprint(audio_bytes: bytes, threshold: float = 0.70) -> dict:
 def verify_pin(pin: str) -> bool:
     """Verify fallback security PIN."""
     global _consecutive_fails, _lockout_until
+    import hmac
     env_pin = os.environ.get("EVO_PIN", "").strip()
     if not env_pin:
         return False
     target_hash = hashlib.sha256(env_pin.encode()).hexdigest()
     in_hash = hashlib.sha256(str(pin).strip().encode()).hexdigest()
-    if in_hash == target_hash:
+    if hmac.compare_digest(in_hash, target_hash):
         _consecutive_fails = 0
         _lockout_until = 0.0
         log.info("Security lockout cleared via valid PIN")

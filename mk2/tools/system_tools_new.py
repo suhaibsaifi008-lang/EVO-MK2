@@ -190,9 +190,16 @@ def open_app(target: str) -> dict:
 @tool("close_app", "Close app windows whose title contains the target.",
       {"target": {"type": "string"}}, permission="execute")
 def close_app(target: str) -> dict:
+    import re as _re
+    import base64
+    clean = (target or "").strip()
+    if not _re.fullmatch(r'[\w\s.\-]+', clean):
+        return {"ok": False, "speech": f"Invalid app target: '{target}'.", "data": {}}
+    b64_target = base64.b64encode(clean.encode("utf-8")).decode("ascii")
     n = _run_ps(
+        f"$t = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{b64_target}')); "
         "(Get-Process | Where-Object {$_.MainWindowTitle -ne ''} | "
-        f"Where-Object {{ $_.MainWindowTitle -like '*{target}*' }} | "
+        "Where-Object { $_.MainWindowTitle -like \"*$t*\" } | "
         "ForEach-Object { $_.CloseMainWindow() } | Measure-Object).Count"
     )
     count = int(n or 0)
@@ -284,8 +291,15 @@ def clipboard_set(text: str = "") -> dict:
         return {"ok": True, "speech": f"Copied {len(text)} characters.", "data": {"length": len(text)}}
     except ImportError:
         try:
-            escaped = text.replace("'", "''")
-            _run_ps(f"Set-Clipboard -Value '{escaped}'")
+            import base64
+            import subprocess
+            cmd = f"Set-Clipboard -Value @'\n{text}\n'@"
+            encoded_cmd = base64.b64encode(cmd.encode("utf-16le")).decode("ascii")
+            subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded_cmd],
+                check=True, timeout=5,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
             _push_clip(text)
             return {"ok": True, "speech": f"Copied {len(text)} characters.", "data": {"length": len(text)}}
         except Exception as exc:

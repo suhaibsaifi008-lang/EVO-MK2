@@ -80,13 +80,6 @@ def _paths(name: str) -> tuple:
     return base.with_suffix(".py"), base.with_suffix(".json"), clean
 
 
-def _paths(name: str) -> tuple:
-    clean = name.strip().lower().replace(" ", "_")
-    import re
-
-    clean = re.sub(r"[^a-z0-9_]", "", clean)[:40]
-    base = SKILLS_DIR / clean
-    return base.with_suffix(".py"), base.with_suffix(".json"), clean
 
 
 def save(name: str, description: str, code: str) -> dict:

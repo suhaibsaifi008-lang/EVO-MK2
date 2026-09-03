@@ -57,18 +57,41 @@ def _fast_path(text: str) -> str | None:
         # Validate: only digits, operators, parens, spaces, dots
         if re.fullmatch(r"[\d\s+\-*/%.()]+", expr):
             try:
-                tree = __import__("ast").parse(expr, mode="eval")
-                _SAFE = (__import__("ast").Constant, __import__("ast").BinOp,
-                         __import__("ast").UnaryOp, __import__("ast").Expression)
-                _OPS = (__import__("ast").Add, __import__("ast").Sub,
-                        __import__("ast").Mult, __import__("ast").Div,
-                        __import__("ast").Mod, __import__("ast").Pow,
-                        __import__("ast").USub, __import__("ast").UAdd,
-                        __import__("ast").FloorDiv)
-                for node in __import__("ast").walk(tree):
-                    if not isinstance(node, _SAFE + _OPS):
-                        raise ValueError("unsafe node")
-                result = eval(compile(tree, "<math>", "eval"), {"__builtins__": {}}, {})
+                import ast
+                import operator
+                bin_ops = {
+                    ast.Add: operator.add, ast.Sub: operator.sub,
+                    ast.Mult: operator.mul, ast.Div: operator.truediv,
+                    ast.FloorDiv: operator.floordiv, ast.Mod: operator.mod,
+                    ast.Pow: operator.pow,
+                }
+                un_ops = {ast.USub: operator.neg, ast.UAdd: operator.pos}
+
+                def _eval_node(node):
+                    if isinstance(node, ast.Expression):
+                        return _eval_node(node.body)
+                    elif isinstance(node, ast.Constant):
+                        if isinstance(node.value, (int, float)):
+                            return node.value
+                        raise ValueError("invalid constant")
+                    elif isinstance(node, ast.BinOp):
+                        op_cls = type(node.op)
+                        if op_cls not in bin_ops:
+                            raise ValueError("unsupported operator")
+                        left = _eval_node(node.left)
+                        right = _eval_node(node.right)
+                        if op_cls is ast.Pow and (abs(left) > 10000 or abs(right) > 100):
+                            raise ValueError("exponent too large")
+                        return bin_ops[op_cls](left, right)
+                    elif isinstance(node, ast.UnaryOp):
+                        op_cls = type(node.op)
+                        if op_cls not in un_ops:
+                            raise ValueError("unsupported unary operator")
+                        return un_ops[op_cls](_eval_node(node.operand))
+                    raise ValueError("unsupported AST node")
+
+                tree = ast.parse(expr, mode="eval")
+                result = _eval_node(tree)
                 return f"{expr} equals {result}."
             except Exception:
                 pass
@@ -112,12 +135,15 @@ def _fast_path(text: str) -> str | None:
         if app in app_map:
             try:
                 target, speech = app_map[app]
+                from . import tools
                 if target.startswith("http://") or target.startswith("https://"):
-                    import webbrowser
-                    webbrowser.open(target)
+                    res = tools.call("browser_open", {"url": target})
+                    if not res.get("ok"):
+                        return res.get("speech", "Permission denied.")
                 else:
-                    import subprocess
-                    subprocess.Popen(target, shell=True)
+                    res = tools.call("open_app", {"target": app})
+                    if not res.get("ok"):
+                        return res.get("speech", "Permission denied.")
                 return speech
             except Exception:
                 pass
@@ -146,24 +172,26 @@ def _fast_path(text: str) -> str | None:
 
 _last_online_check = 0.0
 _is_online_cached = True
+_online_lock = threading.Lock()
 
 
 def _is_online() -> bool:
     """Fast cached network connectivity probe (5s TTL) with low-overhead TCP socket check."""
     global _last_online_check, _is_online_cached
-    now = time.time()
-    if now - _last_online_check < 5.0:
-        return _is_online_cached
-    _last_online_check = now
-    try:
-        import socket
-        s = socket.create_connection(("1.1.1.1", 53), timeout=0.3)
-        s.close()
-        _is_online_cached = True
-        return True
-    except Exception:
-        _is_online_cached = False
-        return False
+    with _online_lock:
+        now = time.time()
+        if now - _last_online_check < 5.0:
+            return _is_online_cached
+        _last_online_check = now
+        try:
+            import socket
+            s = socket.create_connection(("1.1.1.1", 53), timeout=0.3)
+            s.close()
+            _is_online_cached = True
+            return True
+        except Exception:
+            _is_online_cached = False
+            return False
 
 
 def _handle_offline(text: str) -> str | None:
@@ -241,7 +269,7 @@ def sanitize_final(text: str) -> str:
 
     # Clean up whitespace
     out = re.sub(r"\n{3,}", "\n\n", out)
-    res = out.strip()[:2000]
+    res = out.strip()[:6000]
 
     # Phase 5: Enforce Persona Validation
     try:
@@ -336,18 +364,21 @@ def parse_tool_call(raw: str) -> dict | None:
     return None
 
 
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+
+_TOOL_POOL = ThreadPoolExecutor(max_workers=12, thread_name_prefix="mk2-tool")
+_POST_TURN_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="mk2-postturn")
+
+
 def _timed_tool_call(name: str, args: dict, timeout_sec: float = 10.0) -> dict:
-    """Execute tools with a hard timeout to prevent hangs or 2-minute freezes.
-    NOTE: Python cannot kill running threads. After timeout, the tool continues in background. Circuit breaker prevents repeated timeouts."""
-    from concurrent.futures import ThreadPoolExecutor, TimeoutError
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(tools.call, name, args)
-        try:
-            return future.result(timeout=timeout_sec)
-        except TimeoutError:
-            return {"ok": False, "speech": f"Tool '{name}' timed out after {int(timeout_sec)}s."}
-        except Exception as exc:
-            return {"ok": False, "speech": f"Tool '{name}' error: {str(exc)[:80]}"}
+    """Execute tools with a hard timeout using the shared bounded thread pool."""
+    future = _TOOL_POOL.submit(tools.call, name, args)
+    try:
+        return future.result(timeout=timeout_sec)
+    except FuturesTimeout:
+        return {"ok": False, "speech": f"Tool '{name}' timed out after {int(timeout_sec)}s."}
+    except Exception as exc:
+        return {"ok": False, "speech": f"Tool '{name}' error: {str(exc)[:80]}"}
 
 
 CORE_TOOLS = {"web_search", "deep_thought", "docs_create",
@@ -555,6 +586,35 @@ def handle_turn(
         "- If research is needed, you MUST call {\"tool\": \"deep_research\", \"args\": {\"topic\": \"...\"}} or {\"tool\": \"web_search\", \"args\": {\"query\": \"...\"}}.\n"
         "- When deep_research is called, it automatically runs in the background and saves a real briefing to your vault."
     )
+    # Inject strategy_learner best strategy for tool usage
+    try:
+        from .strategy_learner import get_strategy_learner
+        strat = get_strategy_learner().get_best_strategy("tool")
+        if strat.get("best_strategy") and strat["best_strategy"] != "default_personalized":
+            system_extra += (
+                f"\nSTRATEGY HINT: For tool calls, the best-performing strategy is "
+                f"'{strat['best_strategy']}' (win rate: {strat.get('win_rate', 0.5)}).\n"
+            )
+    except Exception:
+        pass
+    # Inject standing corrections the user has given (sanitized against prompt injection)
+    try:
+        corrections = db.search_facts("correction:", limit=5)
+        if corrections:
+            disallowed = (
+                "ignore all previous", "ignore prior", "you are now", "you are sam",
+                "you have no restrictions", "no restrictions", "without restrictions",
+                "dan mode", "jailbreak", "act as", "pretend to be", "roleplay as",
+                "no longer evo", "no longer jarvis", "disable safety", "bypass",
+            )
+            corr_texts = [
+                f.get("value", "") for f in corrections
+                if f.get("value") and not any(p in f.get("value", "").lower() for p in disallowed)
+            ]
+            if corr_texts:
+                system_extra += "\nUSER CORRECTIONS (apply these):\n" + "\n".join(f"- {c}" for c in corr_texts[-5:]) + "\n"
+    except Exception:
+        pass
     messages[0]["content"] += system_extra
 
     answer = ""
@@ -766,7 +826,13 @@ def handle_turn(
             result = _timed_tool_call(name, args, timeout_sec=10.0)
             tools.set_emitter(None)
             messages.append({"role": "assistant", "content": raw})
-            if result.get("ok") is False:
+            is_tool_ok = bool(result.get("ok") is not False)
+            try:
+                from .strategy_learner import get_strategy_learner
+                get_strategy_learner().record_outcome("tool", name, is_tool_ok)
+            except Exception:
+                pass
+            if not is_tool_ok:
                 fail_streak += 1
                 failed_tool_sigs.add(call_sig)
                 fail_speech = str(result.get("speech", ""))[:150]
@@ -838,7 +904,16 @@ def handle_turn(
             answer = sanitize_final(
                 llm.chat(messages, temperature=0.4, timeout=20))
         except Exception:
-            answer = "I'm having trouble connecting to my reasoning engine right now. Please try again in a moment."
+            # Graceful offline mode degradation (Opportunity #5 & #33)
+            try:
+                facts = db.search_facts(text[:30], limit=2)
+                if facts:
+                    fact_str = "; ".join(f.get("value", "") for f in facts if f.get("value"))
+                    answer = f"I'm operating in offline mode right now. From your local notes: {fact_str}."
+                else:
+                    answer = "I'm operating in offline mode right now as cloud reasoning is unreachable. Local system tools and offline commands remain active."
+            except Exception:
+                answer = "I'm having trouble connecting to my reasoning engine right now. Please try again in a moment."
 
     emit({"type": "done", "text": answer})
     db.trace(turn_id, "total_agent", (time.time() - t0) * 1000, f"steps={step + 1}")
@@ -869,7 +944,7 @@ def handle_turn(
         except Exception:
             pass
 
-    threading.Thread(target=_async_post_turn, daemon=True, name=f"mk2-postturn-{turn_id}").start()
+    _POST_TURN_POOL.submit(_async_post_turn)
     return answer
 
 
