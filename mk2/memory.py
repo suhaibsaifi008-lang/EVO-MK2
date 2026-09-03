@@ -401,6 +401,12 @@ def build_context_messages(user_text: str, surface: str = "console") -> list[dic
 	except Exception:
 		pass
 
+	try:
+		from .firewall import DEFENSIVE_PROMPT_ADDENDUM
+		system += "\n" + DEFENSIVE_PROMPT_ADDENDUM
+	except Exception:
+		pass
+
 	is_voice_or_fast = surface in ("voice", "web")
 	needs_deep_memory = any(k in (user_text or "").lower() for k in ("remember", "recall", "past note", "last time", "history", "what did i say"))
 

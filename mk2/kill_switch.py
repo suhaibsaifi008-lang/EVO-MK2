@@ -62,24 +62,38 @@ class KillSwitch:
         t0 = time.perf_counter()
         subsystem_status: dict[str, str] = {}
         
-        # 1. Stop money engine if running
+        # 1. Stop money engine if running (actively verify thread termination)
         try:
             from .money_engine import _global_money
             if _global_money is not None:
                 _global_money.stop()
-                subsystem_status["money"] = "stopped"
+                th = getattr(_global_money, "_thread", None)
+                if th and th.is_alive():
+                    try:
+                        th.join(timeout=1.5)
+                    except RuntimeError:
+                        pass
+                    if th.is_alive():
+                        subsystem_status["money"] = "failed: worker thread hung"
+                    else:
+                        subsystem_status["money"] = "stopped"
+                else:
+                    subsystem_status["money"] = "stopped"
             else:
                 subsystem_status["money"] = "not_running"
         except Exception as exc:
             log.warning("KillSwitch: failed to stop money engine: %s", exc)
             subsystem_status["money"] = f"failed: {exc}"
 
-        # 2. Stop browser agent if running
+        # 2. Stop browser agent if running (verify context cleared)
         try:
             from .browser_agent import _global_browser
             if _global_browser is not None:
                 _global_browser.stop()
-                subsystem_status["browser"] = "stopped"
+                if _global_browser.page is not None or _global_browser.context is not None:
+                    subsystem_status["browser"] = "failed: browser session failed to close"
+                else:
+                    subsystem_status["browser"] = "stopped"
             else:
                 subsystem_status["browser"] = "not_running"
         except Exception as exc:
@@ -91,7 +105,15 @@ class KillSwitch:
             from .jarvis_agent import _global_jarvis
             if _global_jarvis is not None:
                 _global_jarvis.stop()
-                subsystem_status["jarvis"] = "stopped"
+                th = getattr(_global_jarvis, "thread", None)
+                if th and th.is_alive():
+                    th.join(timeout=1.5)
+                    if th.is_alive():
+                        subsystem_status["jarvis"] = "failed: worker thread hung"
+                    else:
+                        subsystem_status["jarvis"] = "stopped"
+                else:
+                    subsystem_status["jarvis"] = "stopped"
             else:
                 subsystem_status["jarvis"] = "not_running"
         except Exception as exc:
@@ -101,7 +123,15 @@ class KillSwitch:
             from .autonomy import _runner
             if _runner is not None:
                 _runner.stop()
-                subsystem_status["autonomy_runner"] = "stopped"
+                th = getattr(_runner, "thread", getattr(_runner, "_thread", None))
+                if th and th.is_alive():
+                    th.join(timeout=1.5)
+                    if th.is_alive():
+                        subsystem_status["autonomy_runner"] = "failed: runner thread hung"
+                    else:
+                        subsystem_status["autonomy_runner"] = "stopped"
+                else:
+                    subsystem_status["autonomy_runner"] = "stopped"
             else:
                 subsystem_status["autonomy_runner"] = "not_running"
         except Exception as exc:

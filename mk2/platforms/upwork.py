@@ -278,30 +278,46 @@ class UpworkAgent:
         if not self.consent.has_consent("proposal_submit"):
             return MoralVerdict.caution("Submitting proposals requires explicit consent.", action=action_payload)
 
+        # Live browser automation if URL is present
+        gig_url = gig.get("url")
+        submission_ok = True
+        error_detail = ""
+
+        if gig_url:
+            if not self.browser.browser:
+                submission_ok = False
+                error_detail = "Browser session is not active to perform live proposal submission."
+            else:
+                try:
+                    self.browser.navigate(gig_url)
+                    time.sleep(2)
+                    if self.browser.page:
+                        # Fill proposal text area if present
+                        self.browser.page.evaluate(f"""
+                        (note) => {{
+                            const textarea = document.querySelector('textarea[aria-labelledby*="cover_letter"], textarea.air3-textarea, textarea');
+                            if (textarea) {{
+                                textarea.value = note;
+                                textarea.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                            }}
+                        }}
+                        """, cover_note)
+                except Exception as exc:
+                    log.warning("Browser proposal form automation error: %s", exc)
+                    submission_ok = False
+                    error_detail = str(exc)
+
+        if not submission_ok:
+            action_payload["status"] = "failed"
+            action_payload["error"] = error_detail
+            self.audit.log_action(action_payload, v, {"ok": False, "status": "failed", "error": error_detail})
+            return MoralVerdict.block(f"Proposal submission failed: {error_detail}", action=action_payload)
+
+        # Verified submission success
         self.proposals_sent_today += 1
         self.last_proposal_ts = now
         self.known_clients.add(client_id)
         self.consent.record_outcome("proposal_submit", True, f"Submitted to {client_id} (${bid})")
-
-        # Live browser automation if URL is present
-        gig_url = gig.get("url")
-        if gig_url and self.browser.browser:
-            try:
-                self.browser.navigate(gig_url)
-                time.sleep(2)
-                if self.browser.page:
-                    # Fill proposal text area if present
-                    self.browser.page.evaluate(f"""
-                    (note) => {{
-                        const textarea = document.querySelector('textarea[aria-labelledby*="cover_letter"], textarea.air3-textarea, textarea');
-                        if (textarea) {{
-                            textarea.value = note;
-                            textarea.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                        }}
-                    }}
-                    """, cover_note)
-            except Exception as exc:
-                log.warning("Browser proposal form automation note: %s", exc)
 
         action_payload["status"] = "submitted"
         self.audit.log_action(action_payload, v, {"ok": True, "bid": bid, "status": "submitted"})

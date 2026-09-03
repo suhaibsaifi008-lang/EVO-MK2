@@ -284,6 +284,28 @@ class MoneyEngine:
 
     def execute_opportunity(self, opportunity: dict[str, Any]) -> dict[str, Any]:
         """Execute the opportunity through the respective platform agent with verified telemetry."""
+        # P0 Gate: Enforce financial evaluation fail-closed check
+        eval_data = opportunity.get("deep_evaluation")
+        if not eval_data:
+            try:
+                eval_data = self.finance.evaluate_opportunity(opportunity)
+                opportunity["deep_evaluation"] = eval_data
+            except Exception as eval_exc:
+                log.error("execute_opportunity: financial evaluation crashed, failing closed: %s", eval_exc)
+                return {
+                    "ok": False,
+                    "status": "evaluation_failed",
+                    "error": f"Financial risk assessment unavailable: {eval_exc}",
+                }
+
+        if not eval_data or not eval_data.get("ok", True):
+            log.warning("execute_opportunity blocked: financial evaluation failed or rejected")
+            return {
+                "ok": False,
+                "status": "evaluation_failed",
+                "error": "Financial risk assessment failed or rejected",
+            }
+
         plat = opportunity.get("platform")
         if plat == "upwork":
             v = self.upwork.submit_proposal(opportunity, user_approved=False)

@@ -292,11 +292,26 @@ def recall_episodes(query: str, limit: int = 4) -> list[dict]:
 
 
 def audit(tool: str, args_json: str, ok: bool, summary: str) -> None:
+    now = time.time()
     with _lock, connect() as c:
         c.execute(
             "INSERT INTO audit(tool,args_json,ok,result_summary,ts) VALUES(?,?,?,?,?)",
-            (tool, args_json[:800], int(bool(ok)), summary[:300], time.time()),
+            (tool, args_json[:800], int(bool(ok)), summary[:300], now),
         )
+    # Wire into cryptographic audit chain (M8.5)
+    try:
+        from .audit_chain import record_audit_event
+        record_audit_event(
+            actor="user",
+            action=tool,
+            payload={
+                "args": args_json[:800],
+                "ok": bool(ok),
+                "summary": summary[:300],
+            },
+        )
+    except Exception as chain_exc:
+        log.debug("Cryptographic audit chain dispatch note: %s", chain_exc)
 
 
 def recent_audit(limit: int = 12) -> list[dict]:

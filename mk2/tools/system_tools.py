@@ -293,9 +293,13 @@ def web_search(query: str) -> dict:
     except Exception:
         pass
     speech = "; ".join(r["title"] for r in rows[:3])
+    safe_excerpt = "(pages unreadable)"
+    if excerpt:
+        from ..firewall import wrap_untrusted_data
+        safe_excerpt = wrap_untrusted_data(excerpt, source="web_search")
     return {"ok": True, "speech": f"Found: {speech}",
             "data": {"results": rows,
-                     "excerpt": excerpt or "(pages unreadable)"}}
+                     "excerpt": safe_excerpt}}
 
 
 _clipboard_ring: list[dict] = []

@@ -148,10 +148,15 @@ def browser_read() -> dict:
             page.screenshot(path=str(shot))
         except Exception:
             shot = None
+        from ..firewall import wrap_untrusted_data, scan_prompt_injection
+        is_inj, rule, _ = scan_prompt_injection(preview)
+        safe_preview = wrap_untrusted_data(preview, source=page.url)
+
         return {"ok": True,
                 "speech": f"On '{title}': {preview[:200]}",
                 "data": {"url": page.url, "title": title,
-                         "text": preview, "screenshot": str(shot or "")}}
+                         "text": safe_preview, "screenshot": str(shot or ""),
+                         "injection_detected": is_inj}}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "speech": f"Browser read failed: "
                                        f"{str(exc)[:140]}", "data": {}}

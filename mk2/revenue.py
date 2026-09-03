@@ -44,19 +44,32 @@ class RevenueTracker:
     def record_action(self, source: str, action_type: str, client: str = "", amount: float = 0.0, status: str = "initiated", meta: dict | None = None) -> int:
         now = time.time()
         try:
-            with db._lock:
-                with db.connect() as con:
-                    cur = con.execute(
-                        """
-                        INSERT INTO autonomous_revenue (ts, source, amount, action_type, client_name, status, meta_json)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (now, source, amount, action_type, client, status, json.dumps(meta or {}, default=str)),
-                    )
-                    row_id = cur.lastrowid or -1
-                    if row_id > 0 and row_id % 50 == 0:
-                        con.execute("DELETE FROM autonomous_revenue WHERE id <= (SELECT MAX(id) - 5000 FROM autonomous_revenue)")
-                    return row_id
+            from .idempotency import generate_idempotency_key, execute_exactly_once
+            key = generate_idempotency_key("revenue", {
+                "source": source,
+                "action": action_type,
+                "client": client,
+                "amount": round(amount, 2),
+                "meta": meta or {},
+            }, time_window_s=3600.0)
+
+            def _insert() -> int:
+                with db._lock:
+                    with db.connect() as con:
+                        cur = con.execute(
+                            """
+                            INSERT INTO autonomous_revenue (ts, source, amount, action_type, client_name, status, meta_json)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (now, source, amount, action_type, client, status, json.dumps(meta or {}, default=str)),
+                        )
+                        row_id = cur.lastrowid or -1
+                        if row_id > 0 and row_id % 50 == 0:
+                            con.execute("DELETE FROM autonomous_revenue WHERE id <= (SELECT MAX(id) - 5000 FROM autonomous_revenue)")
+                        return row_id
+
+            _, res = execute_exactly_once(key, "revenue", _insert, lease_s=10.0)
+            return int(res) if isinstance(res, (int, float)) else -1
         except Exception as exc:
             log.warning("Failed recording revenue action: %s", exc)
             return -1

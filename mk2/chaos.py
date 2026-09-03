@@ -43,6 +43,8 @@ class ChaosEngine:
         """Simulate LLM provider outage or rate-limit exhaustion."""
         from . import llm
         def failing_chat(*args, **kwargs):
+            if kwargs.get("evaluation_mode") == "execution_critical":
+                raise llm.CriticalEvaluationUnavailable(f"Chaos: LLM Provider HTTP {status_code} Quota Exceeded (simulated)")
             raise RuntimeError(f"Chaos: LLM Provider HTTP {status_code} Quota Exceeded (simulated)")
 
         with patch.object(llm, "chat", side_effect=failing_chat):

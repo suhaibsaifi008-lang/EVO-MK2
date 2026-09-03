@@ -113,40 +113,22 @@ def get_permission_level() -> str:
 
 
 def is_allowed(tool_name: str, permission: str = "", context: dict | None = None) -> bool:
-    level = get_permission_level()
-    tier = _PERMISSION_TIERS.get(level, _PERMISSION_TIERS["safe"])
-
-    # Explicit deny lists take absolute precedence
-    if tier.get("deny") and tool_name in tier["deny"]:
+    """Unified Authorization Gate: delegates directly to the central authorization pipeline (M8.1)."""
+    try:
+        from .authz import check_authorization
+        actor = "autonomous_runner" if (context and context.get("autonomous")) else "user"
+        args = context.get("args", {}) if context else {}
+        decision = check_authorization(
+            action=tool_name,
+            args=args,
+            actor=actor,
+            source="autonomy",
+            context=context,
+        )
+        return decision.allowed
+    except Exception as exc:
+        log.warning("Unified authz check failed for '%s', failing closed: %s", tool_name, exc)
         return False
-
-    if context and context.get("surface") == "voice":
-        voice_deny = {"shell_run", "mouse_click", "type_text", "press_key", "process_kill", "fs_delete"}
-        if tool_name in voice_deny:
-            return False
-
-    if context and context.get("quiet_hours"):
-        dangerous = {"shell_run", "fs_delete", "mail_send", "stripe_invoice"}
-        if tool_name in dangerous:
-            return False
-
-    # Critical capability semantics: high blast-radius tools can never bypass tier checks
-    critical_capabilities = {
-        "shell_run", "process_kill", "stripe_invoice", "delete_file",
-        "fs_delete", "mail_send", "autonomy_permission", "pc_control"
-    }
-    if tool_name in critical_capabilities and level != "full":
-        return False
-
-    # Full autonomy tier allows all non-denied tools
-    if level == "full":
-        return True
-
-    # Enforce verified capability allow-list for non-full tiers
-    if tier.get("allow"):
-        return tool_name in tier["allow"]
-
-    return False
 
 
 @dataclass

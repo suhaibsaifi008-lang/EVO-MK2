@@ -81,6 +81,22 @@ class AuditLogger:
         except Exception as exc:
             log.warning("Failed to write to autonomous_audit: %s", exc)
 
+        # Wire into cryptographic tamper-evident audit chain (M8.5)
+        try:
+            from .audit_chain import record_audit_event
+            record_audit_event(
+                actor="autonomous_agent",
+                action=act_type,
+                payload={
+                    "action": action,
+                    "verdict": v_dict,
+                    "outcome": res,
+                    "ok": bool(ok),
+                },
+            )
+        except Exception as chain_exc:
+            log.debug("Cryptographic audit chain note: %s", chain_exc)
+
         log.info("Audited autonomous action #%s [%s]: verdict=%s ok=%s", row_id, act_type, v_dict.get("verdict"), ok)
         return row_id
 

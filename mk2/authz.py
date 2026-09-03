@@ -102,6 +102,29 @@ class AuthorizationPipeline:
             self._audit(req, decision)
             return decision
 
+        # Context constraints (voice surface & quiet hours)
+        ctx = req.context or {}
+        if ctx.get("surface") == "voice":
+            if act in ("shell_run", "mouse_click", "type_text", "press_key", "process_kill", "fs_delete"):
+                decision = AuthzDecision(
+                    allowed=False,
+                    reason=f"Action '{act}' blocked over voice channel for safety.",
+                    risk_tier="critical",
+                    required_consent="full",
+                )
+                self._audit(req, decision)
+                return decision
+        if ctx.get("quiet_hours"):
+            if act in ("shell_run", "fs_delete", "mail_send", "stripe_invoice"):
+                decision = AuthzDecision(
+                    allowed=False,
+                    reason=f"Action '{act}' blocked during quiet hours.",
+                    risk_tier="high",
+                    required_consent="full",
+                )
+                self._audit(req, decision)
+                return decision
+
         # Stage 2: Dangerous Argument, Path Traversal & Prompt Injection Validation
         args_str = json.dumps(req.args, default=str)
         if ".." in args_str and any(p in args_str for p in ("../", "..\\", "/..", "\\..")):
@@ -209,7 +232,13 @@ def get_authz_pipeline() -> AuthorizationPipeline:
     return _pipeline
 
 
-def check_authorization(action: str, args: dict[str, Any] = None, actor: str = "user", source: str = "console") -> AuthzDecision:
+def check_authorization(
+    action: str,
+    args: dict[str, Any] = None,
+    actor: str = "user",
+    source: str = "console",
+    context: Optional[dict[str, Any]] = None,
+) -> AuthzDecision:
     """Convenience functional interface for authorization check."""
     pipe = get_authz_pipeline()
     req = AuthzRequest(
@@ -217,5 +246,6 @@ def check_authorization(action: str, args: dict[str, Any] = None, actor: str = "
         args=args or {},
         actor=actor,
         source=source,
+        context=context or {},
     )
     return pipe.authorize(req)

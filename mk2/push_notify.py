@@ -23,24 +23,29 @@ def push(title: str, message: str, priority: str = "default") -> bool:
     topic = settings.ntfy_topic.strip()
     if not topic:
         return False
-    url = f"{settings.ntfy_server.rstrip('/')}/{topic}"
-    headers = {
-        "Title": title[:120].encode("utf-8", "ignore"),
-        "Priority": priority,
-        "Tags": "robot",
-    }
-    try:
-        status = _post(url, (message or "").strip()[:4000].encode("utf-8"),
-                       headers=headers)
-        return 200 <= status < 300
-    except Exception as exc:
-        log.warning("push failed: %s", exc)
-        try:
-            from . import errlog
 
-            errlog.log_error("push:send", str(exc))
-        except Exception:
-            pass
+    try:
+        from .idempotency import generate_idempotency_key, execute_exactly_once
+        key = generate_idempotency_key("notification", {"topic": topic, "title": title, "msg": message}, time_window_s=120.0)
+
+        def _do_push() -> bool:
+            url = f"{settings.ntfy_server.rstrip('/')}/{topic}"
+            headers = {
+                "Title": title[:120].encode("utf-8", "ignore"),
+                "Priority": priority,
+                "Tags": "robot",
+            }
+            try:
+                status = _post(url, (message or "").strip()[:4000].encode("utf-8"), headers=headers)
+                return 200 <= status < 300
+            except Exception as exc:
+                log.warning("push failed: %s", exc)
+                return False
+
+        _, ok = execute_exactly_once(key, "notification", _do_push, lease_s=15.0)
+        return bool(ok)
+    except Exception as exc:
+        log.warning("Idempotent push fallback: %s", exc)
         return False
 
 
