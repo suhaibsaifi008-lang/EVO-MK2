@@ -60,66 +60,98 @@ class KillSwitch:
 
     def stop_all(self, reason: str = "User triggered emergency stop") -> dict[str, Any]:
         t0 = time.perf_counter()
+        subsystem_status: dict[str, str] = {}
         
         # 1. Stop money engine if running
         try:
             from .money_engine import _global_money
             if _global_money is not None:
                 _global_money.stop()
+                subsystem_status["money"] = "stopped"
+            else:
+                subsystem_status["money"] = "not_running"
         except Exception as exc:
             log.warning("KillSwitch: failed to stop money engine: %s", exc)
+            subsystem_status["money"] = f"failed: {exc}"
 
         # 2. Stop browser agent if running
         try:
             from .browser_agent import _global_browser
             if _global_browser is not None:
                 _global_browser.stop()
+                subsystem_status["browser"] = "stopped"
+            else:
+                subsystem_status["browser"] = "not_running"
         except Exception as exc:
             log.warning("KillSwitch: failed to stop browser agent: %s", exc)
+            subsystem_status["browser"] = f"failed: {exc}"
 
         # 3. Stop JARVIS brain thread and autonomy runner if running
         try:
             from .jarvis_agent import _global_jarvis
             if _global_jarvis is not None:
                 _global_jarvis.stop()
+                subsystem_status["jarvis"] = "stopped"
+            else:
+                subsystem_status["jarvis"] = "not_running"
         except Exception as exc:
             log.warning("KillSwitch: failed to stop JARVIS agent: %s", exc)
+            subsystem_status["jarvis"] = f"failed: {exc}"
         try:
             from .autonomy import _runner
             if _runner is not None:
                 _runner.stop()
+                subsystem_status["autonomy_runner"] = "stopped"
+            else:
+                subsystem_status["autonomy_runner"] = "not_running"
         except Exception as exc:
             log.warning("KillSwitch: failed to stop autonomy runner: %s", exc)
+            subsystem_status["autonomy_runner"] = f"failed: {exc}"
 
         # 4. Stop voice streams and active conversation mode
         try:
             from .voice.gateway import gateway
             gateway.stop()
+            subsystem_status["voice_gateway"] = "stopped"
         except Exception as exc:
             log.warning("KillSwitch: failed to stop voice gateway: %s", exc)
+            subsystem_status["voice_gateway"] = f"failed: {exc}"
         try:
             from .voice import convo
             convo.convo_mode.stop()
+            subsystem_status["voice_convo"] = "stopped"
         except Exception as exc:
             log.warning("KillSwitch: failed to stop convo mode: %s", exc)
+            subsystem_status["voice_convo"] = f"failed: {exc}"
 
         # 5. Stop proactive anticipation engine if running
         try:
             from .proactive_agent import _engine
             if _engine is not None:
                 _engine.stop()
+                subsystem_status["proactive_engine"] = "stopped"
+            else:
+                subsystem_status["proactive_engine"] = "not_running"
         except Exception as exc:
             log.warning("KillSwitch: failed to stop proactive engine: %s", exc)
+            subsystem_status["proactive_engine"] = f"failed: {exc}"
 
         # 6. Close Gemini connection pools
         try:
             from .llm import close_gemini_client
             close_gemini_client()
+            subsystem_status["llm_pool"] = "closed"
         except Exception as exc:
             log.warning("KillSwitch: failed closing gemini client: %s", exc)
+            subsystem_status["llm_pool"] = f"failed: {exc}"
 
         # 7. Cancel all supervised kernel tasks
-        tasks_cancelled = self.stop_kernel_subsystems()
+        try:
+            tasks_cancelled = self.stop_kernel_subsystems()
+            subsystem_status["kernel_tasks"] = f"cancelled_{tasks_cancelled}"
+        except Exception as exc:
+            tasks_cancelled = 0
+            subsystem_status["kernel_tasks"] = f"failed: {exc}"
 
         # 8. Stop Telegram if running
         try:
@@ -127,21 +159,48 @@ class KillSwitch:
                 tg_event = getattr(telegram_link, "_telegram_stop_event", None)
                 if tg_event:
                     tg_event.set()
+                subsystem_status["telegram"] = "stopped"
+            else:
+                subsystem_status["telegram"] = "not_running"
         except Exception as exc:
             log.warning("KillSwitch: failed to stop telegram: %s", exc)
+            subsystem_status["telegram"] = f"failed: {exc}"
 
-        # 9. Downgrade consent level
+        # 9. Downgrade consent level and engage halt flag
         KillSwitch._is_halted = True
-        self.consent.set_level("none")
+        try:
+            self.consent.set_level("none")
+            subsystem_status["consent"] = "none"
+        except Exception as exc:
+            log.error("KillSwitch: CRITICAL - failed to lower consent level: %s", exc)
+            subsystem_status["consent"] = f"failed: {exc}"
+
+        # Compute Tri-State Termination Status: halted | partially_halted | failed
+        failures = [k for k, v in subsystem_status.items() if v.startswith("failed")]
+        if not failures and subsystem_status.get("consent") == "none":
+            status = "halted"
+            ok = True
+            speech = "Emergency stop confirmed. All autonomous subsystems halted."
+        elif subsystem_status.get("consent") == "none":
+            status = "partially_halted"
+            ok = False
+            speech = f"Emergency stop partially completed. Failed to halt: {', '.join(failures)}."
+        else:
+            status = "failed"
+            ok = False
+            speech = "Emergency stop failed to engage critical safety controls."
 
         dt_ms = (time.perf_counter() - t0) * 1000.0
-        log.warning("EMERGENCY KILL SWITCH: All autonomous systems halted in %.2fms (%d kernel tasks cancelled). Reason: %s",
-                    dt_ms, tasks_cancelled, reason)
+        log.warning("EMERGENCY KILL SWITCH: %s in %.2fms (%d kernel tasks cancelled, %d failures). Reason: %s",
+                    status, dt_ms, tasks_cancelled, len(failures), reason)
 
         res = {
-            "ok": True,
-            "status": "halted",
-            "consent_level": "none",
+            "ok": ok,
+            "status": status,
+            "speech": speech,
+            "subsystem_status": subsystem_status,
+            "failed_subsystems": failures,
+            "consent_level": self.consent.current_level,
             "kernel_tasks_cancelled": tasks_cancelled,
             "latency_ms": round(dt_ms, 2),
             "reason": reason,

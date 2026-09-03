@@ -303,6 +303,7 @@ class UpworkAgent:
             except Exception as exc:
                 log.warning("Browser proposal form automation note: %s", exc)
 
+        action_payload["status"] = "submitted"
         self.audit.log_action(action_payload, v, {"ok": True, "bid": bid, "status": "submitted"})
         return MoralVerdict.safe(f"Proposal submitted for '{gig.get('title')}' at ${bid:.2f}", action=action_payload)
 

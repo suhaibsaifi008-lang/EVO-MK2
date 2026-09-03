@@ -156,11 +156,35 @@ class MoneyEngine:
         if not best:
             return {"ok": True, "picked": None}
 
-        # 4. Deep financial intelligence evaluation
+        # 4. Deep financial intelligence evaluation (Hard Fail-Closed)
+        eval_success = False
         try:
-            best["deep_evaluation"] = self.finance.evaluate_opportunity(best)
+            deep_eval = self.finance.evaluate_opportunity(best)
+            if deep_eval and isinstance(deep_eval, dict) and deep_eval.get("ok", True):
+                best["deep_evaluation"] = deep_eval
+                eval_success = True
+            else:
+                log.warning("Financial intelligence returned invalid evaluation: %s", deep_eval)
         except Exception as exc:
-            log.debug("Financial intelligence evaluation note: %s", exc)
+            log.error("Financial intelligence evaluation failed for '%s': %s", best.get("title"), exc)
+
+        if not eval_success:
+            # P0 Safety: Never auto-execute when financial intelligence fails.
+            verdict = MoralVerdict.caution(
+                f"Financial intelligence evaluation failed for '{best.get('title')}'. Requiring human approval before any execution.",
+                risks=["evaluation_failed", "unverified_financial_risk"],
+                action=best,
+            )
+            item_id = self.queue.enqueue(best, verdict)
+            self.funnel.record_stage(
+                stage="evaluation_failed",
+                source=best.get("platform", "unknown"),
+                client=best.get("client_id", ""),
+                amount=float(best.get("bid", 0.0) or 0.0),
+                meta={"title": best.get("title"), "error": "Financial risk evaluation failed"},
+            )
+            log.warning("MoneyEngine halted execution & enqueued opportunity #%s due to evaluation failure: %s", item_id, best.get("title"))
+            return {"ok": False, "status": "evaluation_failed", "enqueued_id": item_id, "action": best}
 
         # 5. Route: Auto-Approved vs Queue for Approval
         act_type = best.get("type", "opportunity")
@@ -259,7 +283,7 @@ class MoneyEngine:
         return fallback_pick
 
     def execute_opportunity(self, opportunity: dict[str, Any]) -> dict[str, Any]:
-        """Execute the opportunity through the respective platform agent."""
+        """Execute the opportunity through the respective platform agent with verified telemetry."""
         plat = opportunity.get("platform")
         if plat == "upwork":
             v = self.upwork.submit_proposal(opportunity, user_approved=False)
@@ -270,12 +294,21 @@ class MoneyEngine:
                         action={"type": "upwork_proposal", "opportunity": opportunity},
                         verdict=v,
                     )
+                    self.funnel.record_stage(
+                        stage="proposal_enqueued",
+                        source="upwork",
+                        client=opportunity.get("client_id", ""),
+                        amount=float(opportunity.get("bid", 150.0)),
+                        meta={"gig": opportunity.get("title"), "approval_id": item_id},
+                    )
                     res = v.to_dict()
                     res["approval_item_id"] = item_id
                     return res
                 except Exception:
                     pass
-            if v.verdict == "safe":
+
+            # Only record proposal_sent if verified submission succeeded
+            if v.verdict == "safe" and v.action and v.action.get("status") == "submitted":
                 self.funnel.record_stage(
                     stage="proposal_sent",
                     source="upwork",
@@ -283,17 +316,28 @@ class MoneyEngine:
                     amount=float(opportunity.get("bid", 150.0)),
                     meta={"gig": opportunity.get("title")},
                 )
+            elif v.verdict == "block":
+                self.funnel.record_stage(
+                    stage="proposal_failed",
+                    source="upwork",
+                    client=opportunity.get("client_id", ""),
+                    amount=float(opportunity.get("bid", 150.0)),
+                    meta={"gig": opportunity.get("title"), "reason": v.reasoning},
+                )
+
             return v.to_dict()
+
         elif plat == "email":
-            # Draft and log
+            # Email drafts do NOT count as sent proposals
             self.funnel.record_stage(
-                stage="proposal_sent",
+                stage="draft_created",
                 source="email",
                 client=opportunity.get("from", ""),
                 amount=0.0,
                 meta={"subject": opportunity.get("title")},
             )
-            return {"ok": True, "status": "reviewed"}
+            return {"ok": True, "status": "drafted"}
+
         return {"ok": False, "error": f"Unknown platform: {plat}"}
 
     def get_funnel_metrics(self, days: int = 30) -> dict[str, Any]:

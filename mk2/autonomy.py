@@ -115,25 +115,38 @@ def get_permission_level() -> str:
 def is_allowed(tool_name: str, permission: str = "", context: dict | None = None) -> bool:
     level = get_permission_level()
     tier = _PERMISSION_TIERS.get(level, _PERMISSION_TIERS["safe"])
+
+    # Explicit deny lists take absolute precedence
     if tier.get("deny") and tool_name in tier["deny"]:
         return False
+
     if context and context.get("surface") == "voice":
-        voice_deny = {"shell_run", "mouse_click", "type_text", "press_key"}
+        voice_deny = {"shell_run", "mouse_click", "type_text", "press_key", "process_kill", "fs_delete"}
         if tool_name in voice_deny:
             return False
+
     if context and context.get("quiet_hours"):
-        dangerous = {"shell_run", "fs_delete", "mail_send"}
+        dangerous = {"shell_run", "fs_delete", "mail_send", "stripe_invoice"}
         if tool_name in dangerous:
             return False
-    if level == "full" or permission in ("read", "info"):
-        return True
-    # Allow user-configured REST connectors and loaded skills unless explicitly denied
-    if tool_name.startswith("api_") or tool_name.startswith("skill_"):
-        return True
-    # Enforce allow-list for non-full tiers
-    if tier.get("allow") and tool_name not in tier["allow"]:
+
+    # Critical capability semantics: high blast-radius tools can never bypass tier checks
+    critical_capabilities = {
+        "shell_run", "process_kill", "stripe_invoice", "delete_file",
+        "fs_delete", "mail_send", "autonomy_permission", "pc_control"
+    }
+    if tool_name in critical_capabilities and level != "full":
         return False
-    return True
+
+    # Full autonomy tier allows all non-denied tools
+    if level == "full":
+        return True
+
+    # Enforce verified capability allow-list for non-full tiers
+    if tier.get("allow"):
+        return tool_name in tier["allow"]
+
+    return False
 
 
 @dataclass

@@ -124,6 +124,11 @@ class LLMUnavailable(RuntimeError):
     pass
 
 
+class CriticalEvaluationUnavailable(LLMUnavailable):
+    """Raised when an execution-critical evaluation (safety, ethics, financial risk) fails."""
+    pass
+
+
 class LLMStreamStalled(LLMUnavailable):
     """Raised after partial deltas were yielded when the winning route
     died mid-generation. Carries the partial so callers can recover."""
@@ -567,7 +572,7 @@ def _offline_parse(text: str) -> str | None:
 
 def chat(messages: list[dict], temperature: float = 0.6, model: str = "",
          role: str = "primary", timeout: int = 60, bias: bool = True,
-         max_providers: int | None = None) -> str:
+         max_providers: int | None = None, evaluation_mode: str = "advisory") -> str:
     errors = []
     attempts = _attempts(role, model)
     if max_providers:
@@ -608,7 +613,13 @@ def chat(messages: list[dict], temperature: float = 0.6, model: str = "",
             errors.append(f"{prov['name']}/{m}: {exc}")
             _penalize(prov["name"], m, str(exc))
 
-    # Offline local fallback for basic commands
+    if evaluation_mode == "execution_critical":
+        # Execution-critical safety/risk evaluations MUST FAIL-CLOSED.
+        raise CriticalEvaluationUnavailable(
+            f"Execution-critical evaluation failed across all providers: {'; '.join(errors) or 'none configured'}"
+        )
+
+    # Offline local fallback for basic commands (advisory mode only)
     user_prompt = ""
     for msg in reversed(messages):
         if msg.get("role") == "user":
