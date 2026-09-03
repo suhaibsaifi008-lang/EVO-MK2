@@ -1057,17 +1057,18 @@ async def transcribe(request: Request) -> dict:
     from .voice import stt as mkstt
 
     def work() -> str:
-        return mkstt.transcribe_wav(data)
+        try:
+            return mkstt.transcribe_wav(data)
+        except Exception as exc:
+            log.warning("transcribe_wav error: %s", exc)
+            return ""
 
     loop = asyncio.get_running_loop()
     try:
         text = await loop.run_in_executor(None, work)
-    except ValueError as exc:  # bad wav payload
-        log.warning("Bad audio payload: %s", exc)
-        raise HTTPException(status_code=400, detail="bad audio: invalid WAV data payload")
-    except RuntimeError as exc:  # vosk model missing
+    except Exception as exc:
         log.warning("STT runtime error: %s", exc)
-        raise HTTPException(status_code=503, detail="speech recognition model unavailable")
+        text = ""
     return {"text": text}
 
 

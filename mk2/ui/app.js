@@ -357,7 +357,7 @@ async function legacyRecorderStart() {
     if (!pttRecording) return;
     const input = ev.inputBuffer.getChannelData(0);
     let peak = 0; for (let i = 0; i < input.length; i++) { const v = Math.abs(input[i]); if (v > peak) peak = v; }
-    if (peak > .06) { speechSeen = true; quietFrames = 0; } else if (speechSeen) quietFrames++;
+    if (peak > .015) { speechSeen = true; quietFrames = 0; } else if (speechSeen) quietFrames++;
     for (let i = 0; i < input.length; i++) collected.push(input[i]);
     const frameMs = input.length / rate * 1000, elapsed = collected.length / rate * 1000;
     if ((speechSeen && quietFrames * frameMs > 1000) || elapsed > 9000) legacyRecorderFinish();
@@ -376,7 +376,7 @@ async function legacyRecorderFinish() {
   const samples = new Int16Array(collected.length);
   for (let i = 0; i < collected.length; i++) { const s = Math.max(-1, Math.min(1, collected[i])); samples[i] = s < 0 ? s * 0x8000 : s * 0x7fff; }
   collected = []; try { await audioCtx.close(); } catch {} audioCtx = null;
-  if (!speechSeen || samples.length < rate / 2) { $("sttPreview").textContent = ""; toast("Didn't hear anything."); faceState("idle"); return; }
+  if (!speechSeen && samples.length < rate * 0.2) { $("sttPreview").textContent = ""; toast("Didn't hear anything."); faceState("idle"); return; }
   $("sttPreview").textContent = "Transcribing…"; faceState("thinking");
   try {
     const wav = encodeWav(samples, rate);
@@ -408,7 +408,7 @@ function encodeWav(int16, rate) {
   const ws = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
   ws(0, "RIFF"); v.setUint32(4, 36 + int16.length * 2, true); ws(8, "WAVE");
   ws(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
-  v.setUint32(24, rate, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
   ws(36, "data"); v.setUint32(40, int16.length * 2, true);
   for (let i = 0; i < int16.length; i++) v.setInt16(44 + i * 2, int16[i], true);
   return new Blob([buf], { type: "audio/wav" });
@@ -467,7 +467,7 @@ async function wlStart() {
     let peak = 0;
     for (let i = 0; i < input.length; i++) { const v = Math.abs(input[i]); if (v > peak) peak = v; }
     const frameMs = input.length / rate * 1000;
-    if (peak > .06) { wl.seen = true; wl.quiet = 0; }
+    if (peak > .015) { wl.seen = true; wl.quiet = 0; }
     else if (wl.seen) wl.quiet++;
     if (wl.seen) for (let i = 0; i < input.length; i++) wl.buf.push(input[i]);
     const heldMs = wl.buf.length / rate * 1000;

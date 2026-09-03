@@ -13,7 +13,7 @@ from typing import Optional
 
 log = logging.getLogger("mk2.voice.spotter")
 
-ENERGY_THRESHOLD = 0.055  # RMS energy threshold for VAD pre-filtering (tuned to suppress background noise)
+ENERGY_THRESHOLD = 0.012  # RMS energy threshold for VAD pre-filtering (~400 RMS, normal speech)
 
 
 class WakeSpotter:
@@ -25,7 +25,7 @@ class WakeSpotter:
         ]
         self.backend = "energy_vad_spotter"
         self._consecutive_silent_frames = 0
-        self._noise_floor = 0.015
+        self._noise_floor = 0.005
         self._oww_model = None
 
         try:
@@ -56,7 +56,7 @@ class WakeSpotter:
         rms = self._rms(frame) / 32768.0
         # Adaptive noise floor tracking (exponential moving average of background floor)
         self._noise_floor = 0.95 * self._noise_floor + 0.05 * min(rms, ENERGY_THRESHOLD)
-        thresh = max(ENERGY_THRESHOLD, self._noise_floor * 1.8)
+        thresh = max(ENERGY_THRESHOLD, self._noise_floor * 1.25)
         if rms >= thresh:
             self._consecutive_silent_frames = 0
             return True

@@ -248,39 +248,44 @@ def _transcribe_gemini(pcm: bytes) -> str:
 
 
 def transcribe_wav(data: bytes) -> str:
-    """PTT entrypoint. Engine chain per EVO_STT_ENGINE (default auto):
-    whisper (1.3s local, proven accurate) -> gemini (top-tier ~4s) -> vosk.
-    Set EVO_STT_ENGINE=gemini to force cloud-only."""
+    """PTT entrypoint: resilient multi-engine STT with offline-first priority."""
     import os
     engine = os.environ.get("EVO_STT_ENGINE", "auto").lower().strip()
     pcm, rate = decode_wav(data)
-    if not pcm:
+    if not pcm or len(pcm) < 800:
         return ""
 
     if engine == "whisper":
         text = _transcribe_whisper(pcm)
-        if text:
-            return text
-        return _transcribe_vosk(pcm)
-    if engine == "gemini":
-        return _transcribe_gemini(pcm) or _transcribe_vosk(pcm)
+        return text or _transcribe_vosk(pcm)
     if engine == "vosk":
         return _transcribe_vosk(pcm)
+    if engine == "gemini":
+        return _transcribe_gemini(pcm) or _transcribe_whisper(pcm) or _transcribe_vosk(pcm)
 
-    # auto: whisper first (fast + offline). If not available or fails, try gemini, then vosk
+    # auto mode: Whisper (local faster-whisper) -> Vosk (local kaldi) -> Gemini (cloud)
     try:
         text = _transcribe_whisper(pcm)
-        if text:
-            return text
-    except Exception:
-        pass
+        if text and text.strip().lower() not in ("you", "thank you.", "thank you"):
+            return text.strip()
+    except Exception as exc:
+        print(f"[stt] whisper note: {exc}", flush=True)
+
+    try:
+        text = _transcribe_vosk(pcm)
+        if text and text.strip():
+            return text.strip()
+    except Exception as exc:
+        print(f"[stt] vosk note: {exc}", flush=True)
+
     try:
         text = _transcribe_gemini(pcm)
-        if text:
-            return text
+        if text and text.strip():
+            return text.strip()
     except Exception:
         pass
-    return _transcribe_vosk(pcm)
+
+    return ""
 
 
 def decode_wav(data: bytes) -> tuple[bytes, int]:
