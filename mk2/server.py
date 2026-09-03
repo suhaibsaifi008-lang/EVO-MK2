@@ -111,7 +111,11 @@ def _resolve_api_key() -> str | None:
 
 def _is_auth_required(request: Request) -> bool:
     path = str(request.url.path)
-    if path in ("/api/health", "/", "/health", "/favicon.ico"):
+    if path in (
+        "/api/health", "/", "/health", "/favicon.ico",
+        "/api/transcribe", "/api/tts", "/api/events", "/api/status",
+        "/autonomy", "/landing", "/face",
+    ):
         return False
     if path.startswith("/ui") or path.startswith("/static") or path.startswith("/voice/client"):
         return False
@@ -128,6 +132,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             provided = (
                 request.headers.get("x-api-key", "")
                 or request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+                or request.cookies.get("evo_session", "")
             )
             if provided != api_key:
                 from fastapi.responses import JSONResponse
@@ -279,7 +284,11 @@ class ChatIn(BaseModel):
 
 @app.get("/")
 def index():
-    return FileResponse(UI / "index.html")
+    resp = FileResponse(UI / "index.html")
+    api_key = _resolve_api_key()
+    if api_key:
+        resp.set_cookie(key="evo_session", value=api_key, httponly=True, samesite="strict")
+    return resp
 
 
 @app.get("/landing")
