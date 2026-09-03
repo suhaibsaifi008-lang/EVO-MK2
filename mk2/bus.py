@@ -94,7 +94,10 @@ class Bus:
             for cb in sub.callbacks:
                 try:
                     t0 = _time()
-                    cb(ev)
+                    try:
+                        cb(ev)
+                    except TypeError:
+                        cb(ev.topic, ev.payload)
                     elapsed = _time() - t0
                     if elapsed > 2.0:
                         log.warning("Slow bus callback %s on %s took %.1fs", cb, topic, elapsed)

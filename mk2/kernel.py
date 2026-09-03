@@ -155,9 +155,11 @@ def main(voice: bool = True) -> None:
     wd = _watchdog.init_watchdog(_loop)
     _loop.create_task(wd.start(), name="watchdog-main")
 
-    def _journal_callback(topic: str, payload: dict) -> None:
-        if not topic.startswith("system.health"):
-            db.record_event(topic, payload)
+    def _journal_callback(ev, payload=None) -> None:
+        topic = getattr(ev, "topic", ev)
+        p = getattr(ev, "payload", payload or {})
+        if not str(topic).startswith("system.health"):
+            db.record_event(str(topic), p)
 
     bus.subscribe("*", _journal_callback)
 
