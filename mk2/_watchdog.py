@@ -183,6 +183,11 @@ class Watchdog:
                 pass
 
         for name, sub in self._subs.items():
+            is_alive = sub.task is not None and not sub.task.done()
+            if is_alive:
+                sub.last_heartbeat = now
+                sub.stall_alerted = False
+                continue
             stall = (now - sub.last_heartbeat) > _WATCHDOG_STALL_S
             if stall and not sub.stall_alerted:
                 sub.stall_alerted = True
