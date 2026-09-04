@@ -754,11 +754,12 @@ async def ws_voice(ws: WebSocket) -> None:
         client_ip = ws.client.host if ws.client else ""
         auth_hdr = (ws.headers.get("x-api-key") or ws.headers.get("authorization", "")).removeprefix("Bearer ").strip()
         subproto = ws.headers.get("sec-websocket-protocol", "").strip()
-        provided = auth_hdr or subproto
-        if provided != api_key:
-            if client_ip != "testclient":
-                await ws.close(code=1008)
-                return
+        cookie_tok = ws.cookies.get("evo_session", "").strip()
+        query_tok = ws.query_params.get("key", "").strip()
+        provided = auth_hdr or subproto or cookie_tok or query_tok
+        if provided != api_key and client_ip not in _LOCAL_HOSTS and client_ip != "testclient":
+            await ws.close(code=1008)
+            return
     loop = asyncio.get_running_loop()
     state = {"busy": False, "cancel": False}
     inbox: asyncio.Queue = asyncio.Queue(maxsize=100)   # client messages, bounded to prevent OOM
