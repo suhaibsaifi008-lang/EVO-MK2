@@ -51,6 +51,16 @@ def fast_command(text, surface="console"):
 
 
 def _single(t, surface="console"):
+	# Emergency kill switch and resume
+	if re.search(r"\b(stop everything|emergency stop|kill autonomy|halt autonomy|stop autonomous mode)\b", t):
+		from .kill_switch import get_kill_switch
+		get_kill_switch().stop_all("Fastlane emergency stop")
+		return "Emergency stop confirmed. All tools and autonomous subsystems halted."
+	if re.search(r"\b(resume autonomy|reset kill switch|disable kill switch|turn off kill switch|resume tools|enable tools|unhalt)\b", t):
+		from .kill_switch import get_kill_switch
+		res = get_kill_switch().disengage("assist")
+		return res.get("speech") or "Kill switch disengaged. Tools and autonomy restored."
+
 	# time / date
 	if re.search(r"\bwhat time\b|\bcurrent time\b|^time$", t):
 		from datetime import datetime

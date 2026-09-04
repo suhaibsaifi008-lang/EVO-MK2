@@ -255,6 +255,24 @@ class KillSwitch:
         res = self.consent.set_level(level, require_user_confirmation=False)
         return res
 
+    def disengage(self, level: str = "assist") -> dict[str, Any]:
+        """Disengage the kill switch and restore consent to an active tier (default 'assist')."""
+        KillSwitch._is_halted = False
+        target = level if level in ("read", "assist", "execute", "full") else "assist"
+        self.consent.set_level(target, require_user_confirmation=False)
+        try:
+            self.audit.log_action({"type": "kill_switch_disengaged", "restored_level": target}, outcome={"ok": True})
+        except Exception:
+            pass
+        log.info("Kill switch disengaged; consent tier restored to '%s'.", target)
+        return {
+            "ok": True,
+            "status": "active",
+            "speech": f"Kill switch disengaged. Tools and autonomy restored at '{target}' tier.",
+            "consent_level": target,
+        }
+
+
 
 _global_kill: Optional[KillSwitch] = None
 

@@ -1274,6 +1274,16 @@ def emergency_kill_switch(request: Request):
     return res
 
 
+@app.post("/api/autonomy/resume")
+@app.post("/api/autonomy/reset")
+def resume_autonomy_endpoint(request: Request):
+    _verify_sync_auth(request)
+    from .kill_switch import get_kill_switch
+    res = get_kill_switch().disengage("assist")
+    return res
+
+
+
 @app.get("/api/autonomy/debt")
 def get_technical_debt_report():
     from .self_improvement import get_self_improvement_engine

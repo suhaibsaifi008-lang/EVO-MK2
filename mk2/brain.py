@@ -38,7 +38,16 @@ def _fast_path(text: str) -> str | None:
             get_kill_switch().stop_all("Voice emergency stop")
         except Exception:
             pass
-        return "Emergency stop confirmed. Autonomous mode halted and consent reverted to assist-only."
+        return "Emergency stop confirmed. All tools and autonomous subsystems halted."
+
+    # Kill switch disengage / resume
+    if re.search(r"\b(resume autonomy|reset kill switch|disable kill switch|turn off kill switch|resume tools|enable tools|unhalt)\b", t):
+        try:
+            from .kill_switch import get_kill_switch
+            res = get_kill_switch().disengage("assist")
+            return res.get("speech") or "Kill switch disengaged. Tools and autonomy restored."
+        except Exception as exc:
+            return f"Error disengaging kill switch: {exc}"
 
     if t in ("time", "the time", "what time", "whats the time",
              "what is the time", "what time is it", "current time"):
