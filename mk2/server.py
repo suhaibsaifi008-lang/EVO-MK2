@@ -889,16 +889,19 @@ async def ws_voice(ws: WebSocket) -> None:
             reply = reply or f"Error: {str(exc)[:150]}"
 
         tail = acc_tail.strip()
+        if not tail and reply:
+            tail = reply.strip()
         if tail and want_audio and not state["cancel"]:
             aq.put_nowait(tail)
         aq.put_nowait(None)
 
-        try:
-            await asyncio.wait_for(worker, timeout=180)
-        except Exception:
-            worker.cancel()
         if ws.client_state == WebSocketState.CONNECTED:
             await ws.send_json({"type": "final", "reply": reply})
+
+        try:
+            await asyncio.wait_for(worker, timeout=20)
+        except Exception:
+            worker.cancel()
 
     try:
         while True:

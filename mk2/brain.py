@@ -211,6 +211,59 @@ def _handle_offline(text: str) -> str | None:
     return None
 
 
+class _JsonSayStreamer:
+    """Extracts and streams text inside {"say": "..."} in real time."""
+    def __init__(self):
+        self.in_say = False
+        self.quote_char = '"'
+        self.escaped = False
+        self.buf = ""
+
+    def feed(self, text: str) -> str:
+        self.buf += text
+        if not self.in_say:
+            idx = self.buf.find('"say"')
+            if idx == -1:
+                idx = self.buf.find("'say'")
+            if idx != -1:
+                colon = self.buf.find(":", idx)
+                if colon != -1:
+                    for i in range(colon + 1, len(self.buf)):
+                        if self.buf[i] in ('"', "'"):
+                            self.in_say = True
+                            self.quote_char = self.buf[i]
+                            self.buf = self.buf[i + 1:]
+                            break
+        if not self.in_say:
+            return ""
+        out = []
+        i = 0
+        while i < len(self.buf):
+            ch = self.buf[i]
+            if self.escaped:
+                if ch == 'n': out.append('\n')
+                elif ch == 't': out.append('\t')
+                elif ch == '"': out.append('"')
+                elif ch == '\\': out.append('\\')
+                elif ch == "'": out.append("'")
+                else: out.append(ch)
+                self.escaped = False
+                i += 1
+            elif ch == '\\':
+                if i == len(self.buf) - 1:
+                    break
+                self.escaped = True
+                i += 1
+            elif ch == self.quote_char:
+                self.buf = ""
+                break
+            else:
+                out.append(ch)
+                i += 1
+        self.buf = self.buf[i:]
+        return "".join(out)
+
+
 def sanitize_final(text: str) -> str:
     """NEVER leak internal protocol, tool names, or internal monologue into the conversation."""
     out = (text or "").strip()
@@ -639,7 +692,8 @@ def handle_turn(
                                          "call any more tools.")})
         emit({"type": "thinking"})
         parts: list[str] = []
-        emit_mode: bool | None = None
+        emit_mode: str | bool | None = None
+        say_streamer = _JsonSayStreamer()
         role = "voice" if (voice or surface == "voice") else "primary"
         step_timeout = min(10 if role == "voice" else 20, max(4, int(remaining)))
         try:
@@ -652,8 +706,15 @@ def handle_turn(
                     first = "".join(parts).lstrip()
                     if not first:
                         continue
-                    emit_mode = not (first.startswith(("{", "```", "<", "`")) or "tool_call" in first or "function=" in first)
-                if emit_mode:
+                    if first.startswith('{"say"') or first.startswith("{'say'") or '"say":' in first or "'say':" in first:
+                        emit_mode = "json_say"
+                    else:
+                        emit_mode = not (first.startswith(("{", "```", "<", "`")) or "tool_call" in first or "function=" in first)
+                if emit_mode == "json_say":
+                    say_delta = say_streamer.feed(delta)
+                    if say_delta:
+                        emit({"type": "delta", "text": say_delta})
+                elif emit_mode is True:
                     emit({"type": "delta", "text": delta})
         except llm.LLMStreamStalled as stalled:
             # winning route died mid-generation: reset UI, show a heartbeat,

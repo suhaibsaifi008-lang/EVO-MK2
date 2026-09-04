@@ -21,19 +21,19 @@ ROLES = ("primary", "fast", "reasoning", "voice")
 # table (score / intelligence). When one model's quota dries up we slide
 # down this list automatically instead of leaving the provider.
 PRIMARY_LADDER = [
-    "claude-sonnet-4-20250514",
-    "claude-haiku-4-5-20251001",
-    "gpt-4o-mini",
-    "gemini-2.0-flash",
+    "claude-haiku-4-5",
+    "claude-sonnet-4-6",
+    "claude-sonnet-4-5-20250929",
+    "claude-opus-4-6",
 ]
 VOICE_LADDER = [
-    "claude-haiku-4-5-20251001",
-    "gpt-4o-mini",
+    "claude-haiku-4-5",
+    "claude-sonnet-4-6",
     "ollama:qwen2.5:7b",
 ]
 MODEL_LADDERS = {
-    "fast": ["claude-haiku-4-5-20251001", "gpt-4o-mini", "ollama:qwen2.5:7b"],
-    "reasoning": ["claude-sonnet-4-20250514", "gpt-4o", "gemini-2.0-flash"],
+    "fast": ["claude-haiku-4-5", "claude-sonnet-4-6", "ollama:qwen2.5:7b"],
+    "reasoning": ["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"],
     "voice": VOICE_LADDER,
 }
 
@@ -170,19 +170,12 @@ def _providers(*args, **kwargs) -> list[dict]:
             "timeout_bias": 20,
         }
 
-    if settings.gemini_key:
-        provs.append({
-            "name": "gemini", "kind": "gemini", "base": "",
-            "key": settings.gemini_key,
-            "default_model": settings.gemini_text_model or "gemini-3.5-flash-lite",
-            "timeout_bias": 0,
-        })
     if settings.anthropic_key:
         provs.append({
             "name": "anthropic", "kind": "anthropic",
             "base": settings.anthropic_base.rstrip("/"),
             "key": settings.anthropic_key,
-            "default_model": settings.anthropic_model or "claude-sonnet-4-6",
+            "default_model": settings.anthropic_model or "claude-haiku-4-5",
             "timeout_bias": 0,
         })
     if settings.openai_key:
@@ -192,8 +185,16 @@ def _providers(*args, **kwargs) -> list[dict]:
             provs.append({
                 "name": "freellmapi", "kind": "openai",
                 "base": settings.openai_base, "key": settings.openai_key,
-                "default_model": settings.openai_model, "timeout_bias": 0,
+                "default_model": settings.openai_model or "claude-haiku-4-5",
+                "timeout_bias": 0,
             })
+    if settings.gemini_key:
+        provs.append({
+            "name": "gemini", "kind": "gemini", "base": "",
+            "key": settings.gemini_key,
+            "default_model": settings.gemini_text_model or "gemini-3.6-flash",
+            "timeout_bias": 0,
+        })
     if role != "voice" and ollama_prov:
         provs.append(ollama_prov)
     return provs
@@ -201,11 +202,11 @@ def _providers(*args, **kwargs) -> list[dict]:
 
 def _role_model(role: str) -> str:
     if role == "voice":
-        return getattr(settings, "voice_model", "") or "claude-haiku-4-5-20251001"
+        return getattr(settings, "voice_model", "") or "claude-haiku-4-5"
     if role == "fast":
-        return settings.fast_model or ""
+        return settings.fast_model or "claude-haiku-4-5"
     if role == "reasoning":
-        return settings.reasoning_model or ""
+        return settings.reasoning_model or "claude-sonnet-4-6"
     return ""
 
 
